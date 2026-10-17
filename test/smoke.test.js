@@ -29,6 +29,7 @@ async function startServer(extraEnv = {}) {
       PORT: String(port),
       DB_PATH: dbPath,
       ADMIN_PASSWORD: 'smoke-test-password-123',
+      ADMIN_LOGIN_RATE_LIMIT: '1000',
       ENQUIRY_RATE_LIMIT: '100',
       ...extraEnv,
     },
@@ -66,6 +67,28 @@ async function post(base, body) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+  });
+  let data = {};
+  try { data = await response.json(); } catch { /* empty body */ }
+  return { status: response.status, data };
+}
+
+async function login(base, username, password) {
+  const response = await fetch(`${base}/api/admin/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  const cookie = (response.headers.get('set-cookie') || '').split(';')[0];
+  let data = {};
+  try { data = await response.json(); } catch { /* empty body */ }
+  return { status: response.status, cookie, data };
+}
+
+async function admin(base, cookie, path, init) {
+  const response = await fetch(`${base}${path}`, {
+    ...init,
+    headers: { 'content-type': 'application/json', cookie, ...(init?.headers || {}) },
   });
   let data = {};
   try { data = await response.json(); } catch { /* empty body */ }
@@ -145,13 +168,8 @@ test('enquiry form smoke', async (t) => {
     });
 
     await t.test('stored enquiries carry consent metadata', async () => {
-      const login = await fetch(`${server.base}/api/admin/login`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ password: 'smoke-test-password-123' }),
-      });
-      assert.equal(login.status, 200);
-      const cookie = (login.headers.get('set-cookie') || '').split(';')[0];
+      const { status, cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      assert.equal(status, 200);
       const list = await (await fetch(`${server.base}/api/admin/inquiries`, { headers: { cookie } })).json();
       const stored = list.find((row) => row.data.reference);
       assert.ok(stored, 'expected at least one stored enquiry');
@@ -185,6 +203,178 @@ test('rate limiting and turnstile', async (t) => {
         statuses.push((await post(server.base, enquiry({ email: `limit-${i}@example.com` }))).status);
       }
       assert.equal(statuses.at(-1), 429, `expected the final request to be rate limited, got ${statuses.join(', ')}`);
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test('admin accounts and audit trail', async (t) => {
+  const server = await startServer();
+  try {
+    await t.test('the seeded administrator can sign in', async () => {
+      const { status, data, cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      assert.equal(status, 200);
+      assert.equal(data.role, 'admin');
+      assert.ok(cookie, 'expected a session cookie');
+    });
+
+    await t.test('wrong credentials are rejected', async () => {
+      const { status, data } = await login(server.base, 'admin', 'wrong-password-here');
+      assert.equal(status, 401);
+      assert.match(data.error, /credentials/i);
+    });
+
+    let editorId;
+    await t.test('an administrator can create an editor account', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const { status, data } = await admin(server.base, cookie, '/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'editor.one', password: 'editor-password-123', role: 'editor' }),
+      });
+      assert.equal(status, 201);
+      editorId = data.id;
+      assert.ok(editorId, 'expected a new user id');
+    });
+
+    await t.test('duplicate usernames are rejected', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const { status } = await admin(server.base, cookie, '/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'editor.one', password: 'editor-password-123' }),
+      });
+      assert.equal(status, 409);
+    });
+
+    await t.test('the new editor can sign in', async () => {
+      const { status, data } = await login(server.base, 'editor.one', 'editor-password-123');
+      assert.equal(status, 200);
+      assert.equal(data.role, 'editor');
+    });
+
+    await t.test('an editor cannot manage accounts or read the audit log', async () => {
+      const { cookie } = await login(server.base, 'editor.one', 'editor-password-123');
+      const users = await admin(server.base, cookie, '/api/admin/users');
+      assert.equal(users.status, 403);
+      const audit = await admin(server.base, cookie, '/api/admin/audit');
+      assert.equal(audit.status, 403);
+    });
+
+    await t.test('the audit log records sign-ins', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const audit = await admin(server.base, cookie, '/api/admin/audit');
+      assert.equal(audit.status, 200);
+      const logins = audit.data.filter((row) => row.action === 'login');
+      assert.ok(logins.some((row) => row.username === 'editor.one'), 'expected the editor sign-in to be audited');
+      const failures = audit.data.filter((row) => row.action === 'login_failed');
+      assert.ok(failures.length >= 1, 'expected the failed sign-in to be audited');
+    });
+
+    await t.test('an administrator can disable and delete an editor', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const disabled = await admin(server.base, cookie, `/api/admin/users/${editorId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'disabled' }),
+      });
+      assert.equal(disabled.status, 200);
+      const blocked = await login(server.base, 'editor.one', 'editor-password-123');
+      assert.equal(blocked.status, 401, 'a disabled account should not be able to sign in');
+      const removed = await admin(server.base, cookie, `/api/admin/users/${editorId}`, { method: 'DELETE' });
+      assert.equal(removed.status, 200);
+    });
+
+    await t.test('an administrator cannot delete their own account', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const users = await admin(server.base, cookie, '/api/admin/users');
+      const adminUser = users.data.find((row) => row.username === 'admin');
+      const removed = await admin(server.base, cookie, `/api/admin/users/${adminUser.id}`, { method: 'DELETE' });
+      assert.equal(removed.status, 400);
+      assert.match(removed.data.error, /own account/i);
+    });
+
+    await t.test('an administrator can remove a second administrator', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const created = await admin(server.base, cookie, '/api/admin/users', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'temp.admin', password: 'temp-admin-password-123', role: 'admin' }),
+      });
+      assert.equal(created.status, 201);
+      const removed = await admin(server.base, cookie, `/api/admin/users/${created.data.id}`, { method: 'DELETE' });
+      assert.equal(removed.status, 200);
+      const after = await admin(server.base, cookie, '/api/admin/users');
+      assert.equal(after.data.filter((row) => row.role === 'admin').length, 1, 'one administrator should remain');
+    });
+
+    await t.test('content edits are recorded in the audit log', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const pages = await admin(server.base, cookie, '/api/admin/pages');
+      const page = pages.data.find((row) => row.slug === 'home');
+      await admin(server.base, cookie, `/api/admin/pages/${page.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ ...page.data, title: page.data.title }),
+      });
+      const audit = await admin(server.base, cookie, '/api/admin/audit');
+      assert.ok(audit.data.some((row) => row.action === 'update' && row.collection === 'pages'), 'expected a page update to be audited');
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+test('team profiles', async (t) => {
+  const server = await startServer();
+  try {
+    let memberId;
+    await t.test('an administrator can create a team member', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const { status, data } = await admin(server.base, cookie, '/api/admin/team', {
+        method: 'POST',
+        body: JSON.stringify({
+          title: 'Dr Amina Bello',
+          slug: 'amina-bello',
+          status: 'published',
+          role: 'Laboratory Lead',
+          credentials: 'PhD, Molecular Biology',
+          bio: 'Leads day-to-day laboratory operations and quality oversight.',
+          order: 1,
+        }),
+      });
+      assert.equal(status, 201);
+      memberId = data.id;
+    });
+
+    await t.test('published team members appear on the public endpoint', async () => {
+      const team = await (await fetch(`${server.base}/api/public/team`)).json();
+      assert.equal(team.length, 1);
+      assert.equal(team[0].title, 'Dr Amina Bello');
+      assert.equal(team[0].data.role, 'Laboratory Lead');
+    });
+
+    await t.test('draft team members stay private', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      await admin(server.base, cookie, '/api/admin/team', {
+        method: 'POST',
+        body: JSON.stringify({ title: 'Draft Person', slug: 'draft-person', status: 'draft', role: 'Trainee', order: 2 }),
+      });
+      const team = await (await fetch(`${server.base}/api/public/team`)).json();
+      assert.equal(team.length, 1, 'only the published member should be public');
+      const all = await admin(server.base, cookie, '/api/admin/team');
+      assert.equal(all.data.length, 2);
+    });
+
+    await t.test('team members can be updated and deleted', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const updated = await admin(server.base, cookie, `/api/admin/team/${memberId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ title: 'Dr Amina Bello', slug: 'amina-bello', status: 'published', role: 'Head of Laboratory', order: 1 }),
+      });
+      assert.equal(updated.status, 200);
+      const team = await (await fetch(`${server.base}/api/public/team`)).json();
+      assert.equal(team.find((row) => row.id === memberId).data.role, 'Head of Laboratory');
+      const removed = await admin(server.base, cookie, `/api/admin/team/${memberId}`, { method: 'DELETE' });
+      assert.equal(removed.status, 200);
+      const after = await (await fetch(`${server.base}/api/public/team`)).json();
+      assert.equal(after.length, 0);
     });
   } finally {
     await server.stop();

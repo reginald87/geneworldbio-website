@@ -7,6 +7,7 @@ export const navItems = [
   { path: '/patients', label: 'Patients' },
   { path: '/quality-compliance', label: 'Quality' },
   { path: '/about', label: 'About' },
+  { path: '/team', label: 'Team' },
   { path: '/contact', label: 'Contact' },
 ];
 

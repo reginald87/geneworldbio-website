@@ -11,14 +11,19 @@ const modules = [
   { key: 'services', label: 'Services', icon: 'layers', singular: 'service', blurb: 'Service pathways shown across the website.' },
   { key: 'faqs', label: 'FAQs', icon: 'sparkle', singular: 'question', blurb: 'Frequently asked questions and answers.' },
   { key: 'claims', label: 'Claims register', icon: 'check', singular: 'claim', blurb: 'Public claims with evidence and review owners.' },
+  { key: 'team', label: 'Team', icon: 'users', singular: 'team member', blurb: 'Team profiles shown on the public team page.' },
   { key: 'inquiries', label: 'Enquiries', icon: 'inbox', singular: 'enquiry', blurb: 'Messages submitted through the contact form.' },
+  { key: 'staff', label: 'Staff & audit', icon: 'shield', singular: 'account', blurb: 'Staff accounts and the audit trail.', custom: true },
 ];
+
+const contentModules = modules.filter((m) => !m.custom);
 
 const fields = {
   pages: ['title', 'slug', 'eyebrow', 'summary', 'status'],
   services: ['title', 'slug', 'description', 'audience', 'access', 'preparation', 'status'],
   faqs: ['title', 'question', 'answer', 'status'],
   claims: ['title', 'claim', 'evidence', 'owner', 'reviewDate', 'status'],
+  team: ['title', 'slug', 'role', 'credentials', 'bio', 'photo', 'order', 'status'],
   inquiries: ['title', 'reference', 'name', 'email', 'category', 'organisation', 'orgType', 'institutionType', 'role', 'location', 'language', 'subject', 'needs', 'volume', 'volumeUnit', 'logistics', 'ethicsStatus', 'timeline', 'website', 'registrationNumber', 'contactMethod', 'phone', 'consentAt', 'message', 'status'],
 };
 
@@ -30,12 +35,13 @@ const fieldLabels = {
   category: 'Enquiry type', location: 'Location', needs: 'Testing needs', volume: 'Estimated volume',
   logistics: 'Logistics requirement', contactMethod: 'Preferred contact method', message: 'Enquiry message', name: 'Name',
   organisation: 'Organisation', phone: 'Phone number', reference: 'Reference', orgType: 'Organisation type',
-  institutionType: 'Institution type', role: 'Role or department', language: 'Preferred language', subject: 'Subject',
+  institutionType: 'Institution type', role: 'Role', language: 'Preferred language', subject: 'Subject',
   volumeUnit: 'Volume period', ethicsStatus: 'Ethics approval', timeline: 'Expected timeline', website: 'Website',
   registrationNumber: 'Registration number', consentAt: 'Consent captured at',
+  credentials: 'Credentials', bio: 'Biography', photo: 'Photo path or URL', order: 'Display order',
 };
 
-const multiline = ['summary', 'description', 'access', 'answer', 'claim', 'evidence', 'message', 'needs', 'logistics', 'preparation'];
+const multiline = ['summary', 'description', 'access', 'answer', 'claim', 'evidence', 'message', 'needs', 'logistics', 'preparation', 'bio'];
 const required = ['title', 'email', 'message'];
 
 const slideFields = [
@@ -65,10 +71,21 @@ export async function mount(mountRoot) {
 async function init() {
   root.innerHTML = `<div class="admin-loading"><span class="spinner"></span>Loading workspace…</div>`;
   try {
-    const results = await Promise.all(modules.map((m) => api(`/admin/${m.key}`)));
-    modules.forEach((m, i) => {
+    const results = await Promise.all(contentModules.map((m) => api(`/admin/${m.key}`)));
+    contentModules.forEach((m, i) => {
       state.cache[m.key] = results[i];
     });
+    state.cache.staff = [];
+    state.cache.audit = [];
+    state.me = null;
+    state.staffNotice = '';
+    try {
+      state.me = await api('/admin/me');
+      state.cache.staff = await api('/admin/users');
+      state.cache.audit = await api('/admin/audit?limit=100');
+    } catch (err) {
+      state.staffNotice = err.message;
+    }
     state.module = 'pages';
     paintShell();
   } catch (error) {
@@ -86,9 +103,11 @@ function showLogin(error = '') {
     event.preventDefault();
     const errorEl = root.querySelector('.login-error');
     errorEl.textContent = '';
+    const fields = new FormData(form);
     try {
-      const password = new FormData(form).get('password');
-      await api('/admin/login', { method: 'POST', body: JSON.stringify({ password }) });
+      const username = String(fields.get('username') || '').trim().toLowerCase();
+      const password = String(fields.get('password') || '');
+      await api('/admin/login', { method: 'POST', body: JSON.stringify({ username, password }) });
       await init();
     } catch (err) {
       errorEl.textContent = err.message;
@@ -97,21 +116,32 @@ function showLogin(error = '') {
 }
 
 function loginPage(error = '') {
-  return `<main class="login-screen"><div class="login-art"><div class="login-orb"></div><div class="login-orb small"></div>${logo()}<div class="login-art-copy"><span>GENEWORLDBIO / CONTENT WORKSPACE</span><h1>Keep every<br>detail <em>connected.</em></h1><p>A considered space to manage pages, the home hero, enquiries and the details that shape your website.</p></div><span class="login-footer">GENEWORLDBIO LTD · RC 9795367</span></div><div class="login-form-side"><div class="login-form">${logo()}<span class="eyebrow">Staff access</span><h2>Welcome back.</h2><p>Sign in to manage the GeneWorldBio website.</p><form class="login-form-inner"><label>Administrator password<input name="password" type="password" required autocomplete="current-password" placeholder="Enter your password"></label><button class="button primary" type="submit">Sign in ${icons.arrow}</button><div class="login-error" role="alert">${esc(error)}</div></form><small>Access is intended for approved website administrators.</small></div></div></main>`;
+  return `<main class="login-screen"><div class="login-art"><div class="login-orb"></div><div class="login-orb small"></div>${logo()}<div class="login-art-copy"><span>GENEWORLDBIO / CONTENT WORKSPACE</span><h1>Keep every<br>detail <em>connected.</em></h1><p>A considered space to manage pages, the home hero, enquiries and the details that shape your website.</p></div><span class="login-footer">GENEWORLDBIO LTD · RC 9795367</span></div><div class="login-form-side"><div class="login-form">${logo()}<span class="eyebrow">Staff access</span><h2>Welcome back.</h2><p>Sign in to manage the GeneWorldBio website.</p><form class="login-form-inner"><label>Username<input name="username" type="text" required autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="your-username"></label><label>Password<input name="password" type="password" required autocomplete="current-password" placeholder="Enter your password"></label><button class="button primary" type="submit">Sign in ${icons.arrow}</button><div class="login-error" role="alert">${esc(error)}</div></form><small>Access is intended for approved website staff accounts.</small></div></div></main>`;
+}
+
+function visibleModules() {
+  const isAdmin = state.me?.role === 'admin';
+  return modules.filter((m) => (m.custom ? isAdmin : true));
 }
 
 function paintShell() {
-  const active = modules.find((m) => m.key === state.module);
+  const navModules = visibleModules();
+  if (!navModules.some((m) => m.key === state.module)) state.module = 'pages';
+  const active = navModules.find((m) => m.key === state.module);
+  const isCustom = Boolean(active.custom);
+  const who = state.me || {};
+  const initials = (who.username || 'gw').slice(0, 2).toUpperCase();
+  const roleLabel = who.role === 'admin' ? 'Administrator' : who.role === 'editor' ? 'Editor' : 'Staff';
   root.className = 'admin-root';
   root.innerHTML = `<div class="admin-shell">
-    <aside class="admin-sidebar">${logo()}<div class="admin-label">Workspace</div><nav>${modules
+    <aside class="admin-sidebar">${logo()}<div class="admin-label">Workspace</div><nav>${navModules
       .map(
         (m) => `<button class="admin-nav ${m.key === state.module ? 'active' : ''}" data-module="${m.key}">${iconSvg(m.icon)}<span>${m.label}</span><small>${(state.cache[m.key] || []).length}</small></button>`
       )
-      .join('')}</nav><button class="logout-btn">Sign out ${icons.arrow}</button><div class="admin-identity"><span class="avatar">GW</span><span><b>Content team</b><small>Administrator</small></span></div></aside>
+      .join('')}</nav><button class="logout-btn">Sign out ${icons.arrow}</button><div class="admin-identity"><span class="avatar">${esc(initials)}</span><span><b>${esc(who.username || 'staff')}</b><small>${esc(roleLabel)}</small></span></div></aside>
     <main class="admin-main">
-      <div class="admin-top"><div><span class="admin-breadcrumb">Workspace / ${active.label}</span><h1>${active.label}</h1><p>${esc(active.blurb)}</p></div><div class="admin-actions">${state.module === 'inquiries' ? '' : `<button class="button primary create-record">${icons.plus} Create ${active.singular}</button>`}<button class="admin-logout">Sign out</button></div></div>
-      <div class="admin-toolbar"><label class="search-box">${icons.search}<input class="admin-search" placeholder="Search ${active.label.toLowerCase()}…" value="${esc(state.search)}"></label><span class="record-count">${(state.cache[state.module] || []).length} ${(state.cache[state.module] || []).length === 1 ? 'record' : 'records'}</span></div>
+      <div class="admin-top"><div><span class="admin-breadcrumb">Workspace / ${esc(active.label)}</span><h1>${esc(active.label)}</h1><p>${esc(active.blurb)}</p></div><div class="admin-actions">${isCustom || state.module === 'inquiries' ? '' : `<button class="button primary create-record">${icons.plus} Create ${active.singular}</button>`}<button class="admin-logout">Sign out</button></div></div>
+      <div class="admin-toolbar"><label class="search-box">${icons.search}<input class="admin-search" placeholder="Search ${esc(active.label.toLowerCase())}…" value="${esc(state.search)}"></label><span class="record-count">${(state.cache[state.module] || []).length} ${(state.cache[state.module] || []).length === 1 ? 'record' : 'records'}</span></div>
       <div class="admin-records"></div>
     </main>
   </div>`;
@@ -137,9 +167,14 @@ function paintShell() {
 function paintRecords() {
   const wrap = root.querySelector('.admin-records');
   if (!wrap) return;
+  const module = modules.find((m) => m.key === state.module);
+  if (module.custom) {
+    paintStaff(wrap);
+    return;
+  }
   const records = orderRecords(filterRecords(state.cache[state.module] || []));
   if (!records.length) {
-    wrap.innerHTML = `<div class="empty-state"><span>✳</span><h2>No ${modules.find((m) => m.key === state.module).label.toLowerCase()} yet</h2><p>New records will appear here when they are added.</p></div>`;
+    wrap.innerHTML = `<div class="empty-state"><span>✳</span><h2>No ${module.label.toLowerCase()} yet</h2><p>New records will appear here when they are added.</p></div>`;
     return;
   }
   wrap.innerHTML = records.map(recordCard).join('');
@@ -149,6 +184,135 @@ function paintRecords() {
       openEditor(record);
     })
   );
+}
+
+function paintStaff(wrap) {
+  if (state.staffNotice) {
+    wrap.innerHTML = `<div class="empty-state"><span>✳</span><h2>Staff management unavailable</h2><p>${esc(state.staffNotice)}</p></div>`;
+    return;
+  }
+  const users = state.cache.staff || [];
+  const audit = state.cache.audit || [];
+  const term = state.search.trim().toLowerCase();
+  const shown = term
+    ? users.filter((u) => `${u.username} ${u.role} ${u.last_login_at || ''}`.toLowerCase().includes(term))
+    : users;
+  wrap.innerHTML = `
+    <section class="staff-section">
+      <div class="staff-section-head"><div><h3>Staff accounts</h3><p>Admins can add, disable and remove accounts. Editors manage content only.</p></div><button class="button primary add-user">${icons.plus} Add account</button></div>
+      <form class="user-form" hidden>
+        <div class="record-form-grid">
+          <label>Username *<input name="username" required minlength="3" autocomplete="off" placeholder="e.g. jdoe"></label>
+          <label>Role *<select name="role"><option value="editor">editor</option><option value="admin">admin</option></select></label>
+          <label>Password *<input name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="At least 12 characters"></label>
+        </div>
+        <div class="record-form-actions"><span class="user-form-error" role="alert"></span><button type="button" class="cancel-user">Cancel</button><button class="button primary">Create account</button></div>
+      </form>
+      ${
+        shown.length
+          ? `<div class="staff-table">${shown
+              .map((u) => {
+                const active = u.status !== 'disabled';
+                const mine = u.username === state.me?.username;
+                return `<div class="staff-row"><span class="avatar">${esc((u.username || 's').slice(0, 2).toUpperCase())}</span><div class="staff-meta"><b>${esc(u.username)}</b><small>${esc(u.role)} · last sign-in ${esc(formatWhen(u.last_login_at))}</small></div><span class="status-pill ${active ? 'published' : 'draft'}">${active ? 'active' : 'disabled'}</span><div class="staff-actions">${active ? `<button data-disable="${esc(u.id)}" ${mine ? 'disabled title="You cannot disable your own account"' : ''}>Disable</button>` : `<button data-enable="${esc(u.id)}">Enable</button>`}<button data-reset="${esc(u.id)}">Reset password</button><button class="danger" data-remove-user="${esc(u.id)}" ${mine ? 'disabled title="You cannot delete your own account"' : ''}>Delete</button></div></div>`;
+              })
+              .join('')}</div>`
+          : `<div class="empty-state small"><p>No accounts match that search.</p></div>`
+      }
+    </section>
+    <section class="staff-section">
+      <div class="staff-section-head"><div><h3>Audit trail</h3><p>Sign-ins and every content, account and team change. Newest first.</p></div><button class="button secondary refresh-audit">Refresh</button></div>
+      ${
+        audit.length
+          ? `<div class="audit-list">${audit
+              .map(
+                (entry) => `<div class="audit-row"><span class="audit-time">${esc(formatWhen(entry.created_at))}</span><span class="audit-who">${esc(entry.username || 'system')}</span><span class="audit-action">${esc(entry.action)}${entry.collection ? ` on ${esc(entry.collection)}` : ''}</span>${entry.ip ? `<span class="audit-ip">${esc(entry.ip)}</span>` : ''}</div>`
+              )
+              .join('')}</div>`
+          : `<div class="empty-state small"><p>No audit entries yet.</p></div>`
+      }
+    </section>`;
+
+  wrap.querySelector('.add-user')?.addEventListener('click', () => {
+    const form = wrap.querySelector('.user-form');
+    form.hidden = !form.hidden;
+    if (!form.hidden) form.querySelector('input')?.focus();
+  });
+  wrap.querySelector('.cancel-user')?.addEventListener('click', () => {
+    const form = wrap.querySelector('.user-form');
+    form.hidden = true;
+    form.reset();
+  });
+  wrap.querySelector('.user-form')?.addEventListener('submit', createUser);
+  wrap.querySelector('.refresh-audit')?.addEventListener('click', async () => {
+    state.cache.audit = await api('/admin/audit?limit=100');
+    paintRecords();
+  });
+  wrap.querySelectorAll('[data-disable], [data-enable]').forEach((button) =>
+    button.addEventListener('click', () => setAccountActive(button.dataset.disable || button.dataset.enable, !button.dataset.disable))
+  );
+  wrap.querySelectorAll('[data-reset]').forEach((button) => button.addEventListener('click', () => resetPassword(button.dataset.reset)));
+  wrap.querySelectorAll('[data-remove-user]').forEach((button) => button.addEventListener('click', () => removeUser(button.dataset.removeUser)));
+}
+
+function formatWhen(value) {
+  if (!value) return 'never';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+async function createUser(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorEl = form.querySelector('.user-form-error');
+  errorEl.textContent = '';
+  const payload = Object.fromEntries(new FormData(form));
+  try {
+    await api('/admin/users', { method: 'POST', body: JSON.stringify(payload) });
+    state.cache.staff = await api('/admin/users');
+    state.cache.audit = await api('/admin/audit?limit=100');
+    form.reset();
+    form.hidden = true;
+    paintRecords();
+  } catch (error) {
+    errorEl.textContent = error.message;
+  }
+}
+
+async function setAccountActive(id, active) {
+  try {
+    await api(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify({ status: active ? 'active' : 'disabled' }) });
+    await refreshStaff();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function resetPassword(id) {
+  const password = prompt('New password for this account (at least 12 characters):');
+  if (password === null) return;
+  try {
+    await api(`/admin/users/${id}`, { method: 'PUT', body: JSON.stringify({ password }) });
+    await refreshStaff();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function removeUser(id) {
+  if (!confirm('Remove this staff account? This cannot be undone.')) return;
+  try {
+    await api(`/admin/users/${id}`, { method: 'DELETE' });
+    await refreshStaff();
+  } catch (error) {
+    alert(error.message);
+  }
+}
+
+async function refreshStaff() {
+  state.cache.staff = await api('/admin/users');
+  state.cache.audit = await api('/admin/audit?limit=100');
+  paintShell();
 }
 
 function filterRecords(records) {

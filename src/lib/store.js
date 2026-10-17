@@ -3,6 +3,7 @@ import { api } from './api.js';
 export const store = {
   pages: [],
   services: [],
+  team: [],
   loaded: false,
 };
 
@@ -41,12 +42,14 @@ export const fallbackHero = {
 export async function loadPublicContent(force = false) {
   if (store.loaded && !force) return store;
   try {
-    const [pages, services] = await Promise.all([api('/public/pages'), api('/public/services')]);
+    const [pages, services, team] = await Promise.all([api('/public/pages'), api('/public/services'), api('/public/team')]);
     store.pages = pages;
     store.services = services;
+    store.team = team;
   } catch {
     store.pages = [];
     store.services = [];
+    store.team = [];
   }
   store.loaded = true;
   return store;

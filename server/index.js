@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { mailerConfigured, sendEnquiryEmails } from './email.js';
@@ -16,6 +16,7 @@ try {
 
 const port = Number(process.env.PORT || 8787);
 const siteUrl = (process.env.SITE_URL || `http://localhost:${port}`).replace(/\/+$/, '');
+const adminUsername = (process.env.ADMIN_USERNAME || 'admin').trim().toLowerCase();
 const secret = process.env.ADMIN_PASSWORD;
 if (!secret || secret.length < 12) {
   console.error('Set ADMIN_PASSWORD to a value of at least 12 characters in .env before starting the server.');
@@ -40,9 +41,33 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS content_collection ON content(collection, created_at);
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'admin',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_login_at TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    username TEXT,
+    action TEXT NOT NULL,
+    collection TEXT,
+    record_id TEXT,
+    ip TEXT,
+    user_agent TEXT,
+    metadata TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS audit_logs_created ON audit_logs(created_at);
+  CREATE INDEX IF NOT EXISTS audit_logs_user ON audit_logs(user_id);
 `);
 
-const collections = new Set(['pages', 'services', 'faqs', 'claims', 'inquiries']);
+const collections = new Set(['pages', 'services', 'faqs', 'claims', 'inquiries', 'team']);
 const sessions = new Map();
 const requestCounts = new Map();
 const inquiryCounts = new Map();
@@ -51,6 +76,7 @@ const safeJson = (value) => JSON.stringify(value);
 const privacyNoticeVersion = process.env.PRIVACY_NOTICE_VERSION || 'v1.0';
 const enquiryReference = () => `GWB-${randomBytes(3).toString('hex').toUpperCase()}`;
 const enquiryRateLimit = Math.max(1, Number(process.env.ENQUIRY_RATE_LIMIT || 5) || 5);
+const adminLoginRateLimit = Math.max(1, Number(process.env.ADMIN_LOGIN_RATE_LIMIT || 8) || 8);
 
 if (!mailerConfigured()) console.warn('Enquiry email notifications are disabled. Set RESEND_API_KEY or SMTP_HOST (plus ENQUIRY_NOTIFY_TO) to enable them.');
 if (!turnstileConfigured()) console.warn('Turnstile bot protection is disabled for the contact form. Set VITE_TURNSTILE_SITE_KEY (client) and TURNSTILE_SECRET_KEY (server) to enable it.');
@@ -182,20 +208,71 @@ if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(COOKIES_COPY_VERSION
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(COOKIES_COPY_VERSION, new Date().toISOString());
 }
 
+const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+if (!userCount) {
+  db.prepare('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)').run(
+    randomUUID(), adminUsername, hashPassword(secret), 'admin', 'active',
+  );
+  console.log(`Created initial administrator account "${adminUsername}". Add more users from the staff workspace.`);
+}
+
 function respond(res, code, body, headers = {}) {
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', 'referrer-policy': 'strict-origin-when-cross-origin', ...headers });
   res.end(JSON.stringify(body));
 }
 function parseCookies(header = '') { return Object.fromEntries(header.split(';').map(x => x.trim().split('=').map(decodeURIComponent)).filter(x => x.length === 2)); }
-function authenticated(req) {
+function sessionFor(req) {
   const token = parseCookies(req.headers.cookie).gw_session;
-  if (!token || !sessions.has(token)) return false;
-  if (sessions.get(token) < Date.now()) { sessions.delete(token); return false; }
-  return true;
+  if (!token || !sessions.has(token)) return null;
+  const session = sessions.get(token);
+  if (!session || session.expires < Date.now()) { sessions.delete(token); return null; }
+  return session;
 }
-function constantTimeEqual(a, b) {
-  const left = Buffer.from(String(a)); const right = Buffer.from(String(b));
-  return left.length === right.length && timingSafeEqual(left, right);
+function authenticated(req) {
+  return Boolean(sessionFor(req));
+}
+function hashPassword(password) {
+  const salt = randomBytes(16).toString('hex');
+  const hash = scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
+}
+function verifyPassword(password, stored) {
+  if (!stored || typeof stored !== 'string' || !stored.includes(':')) return false;
+  const [salt, hash] = stored.split(':');
+  if (!salt || !hash) return false;
+  const computed = scryptSync(password, salt, 64).toString('hex');
+  try {
+    return timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(computed, 'hex'));
+  } catch {
+    return false;
+  }
+}
+function getClientIp(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (fwd) { const first = String(fwd).split(',')[0].trim(); if (first) return first; }
+  const real = req.headers['x-real-ip'];
+  if (real) return String(real).trim();
+  return req.socket?.remoteAddress || '';
+}
+function logAudit(payload) {
+  try {
+    db.prepare(`
+      INSERT INTO audit_logs (id, user_id, username, action, collection, record_id, ip, user_agent, metadata, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    `).run(
+      randomUUID(),
+      payload.userId || null,
+      payload.username || null,
+      payload.action,
+      payload.collection || null,
+      payload.recordId || null,
+      payload.ip || null,
+      payload.userAgent || null,
+      payload.metadata ? safeJson(payload.metadata) : null,
+    );
+  } catch (error) {
+    console.error('audit log failed:', error);
+  }
 }
 async function body(req) {
   let raw = '';
@@ -208,6 +285,14 @@ function validRecord(collection, record, creating) {
   const status = record.status || (collection === 'inquiries' ? 'new' : 'draft');
   const options = collection === 'inquiries' ? ['new', 'in-progress', 'resolved', 'archived'] : ['draft', 'published'];
   if (!options.includes(status)) return 'Status is invalid.';
+  if (collection === 'team') {
+    const bio = String(record.bio || '');
+    if (bio.length > 4000) return 'The biography must be 4000 characters or fewer.';
+    const role = String(record.role || '');
+    if (role.length > 140) return 'The role must be 140 characters or fewer.';
+    const credentials = String(record.credentials || '');
+    if (credentials.length > 300) return 'Credentials must be 300 characters or fewer.';
+  }
   if (collection === 'inquiries') {
     const email = String(record.email || '').trim();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'A valid email address is required.';
@@ -230,7 +315,15 @@ function list(collection, publicOnly) {
   const q = publicOnly
     ? db.prepare("SELECT * FROM content WHERE collection = ? AND status = 'published' ORDER BY created_at, title")
     : db.prepare('SELECT * FROM content WHERE collection = ? ORDER BY created_at DESC');
-  return q.all(collection).map(row => ({ ...row, data: JSON.parse(row.data) }));
+  const rows = q.all(collection).map(row => ({ ...row, data: JSON.parse(row.data) }));
+  if (collection === 'team') {
+    rows.sort((a, b) => {
+      const ao = Number(a.data.order) || 0;
+      const bo = Number(b.data.order) || 0;
+      return ao !== bo ? ao - bo : String(a.title).localeCompare(String(b.title));
+    });
+  }
+  return rows;
 }
 
 const distDir = resolve('dist');
@@ -282,22 +375,42 @@ const server = createServer(async (req, res) => {
 
   if (req.method === 'GET' && path === '/api/health') return respond(res, 200, { ok: true });
   if (req.method === 'POST' && path === '/api/admin/login') {
-    const ip = req.socket.remoteAddress || 'local';
+    const ip = getClientIp(req);
+    const userAgent = req.headers['user-agent'] || '';
     const now = Date.now(); const bucket = requestCounts.get(ip) || { count: 0, until: now + 60000 };
     if (now > bucket.until) { bucket.count = 0; bucket.until = now + 60000; }
-    if (bucket.count >= 8) return respond(res, 429, { error: 'Too many sign-in attempts. Please wait a minute.' });
+    if (bucket.count >= adminLoginRateLimit) return respond(res, 429, { error: 'Too many sign-in attempts. Please wait a minute.' });
     bucket.count++; requestCounts.set(ip, bucket);
     let payload;
     try { payload = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
-    if (!constantTimeEqual(payload.password || '', secret)) return respond(res, 401, { error: 'The password was not accepted.' });
-    const token = randomBytes(32).toString('hex'); sessions.set(token, Date.now() + 8 * 60 * 60 * 1000);
-    return respond(res, 200, { ok: true }, { 'set-cookie': `gw_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
+    const username = String(payload.username || '').trim().toLowerCase();
+    const password = String(payload.password || '');
+    const row = username
+      ? db.prepare("SELECT * FROM users WHERE username = ? AND status = 'active'").get(username)
+      : null;
+    if (!row || !verifyPassword(password, row.password_hash)) {
+      logAudit({ action: 'login_failed', username: username || null, ip, userAgent, metadata: { reason: 'invalid_credentials' } });
+      return respond(res, 401, { error: 'Those credentials were not accepted.' });
+    }
+    db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(row.id);
+    const token = randomBytes(32).toString('hex');
+    sessions.set(token, { userId: row.id, username: row.username, role: row.role, expires: Date.now() + 8 * 60 * 60 * 1000 });
+    logAudit({ userId: row.id, username: row.username, action: 'login', ip, userAgent, metadata: { method: 'password' } });
+    return respond(res, 200, { ok: true, username: row.username, role: row.role }, { 'set-cookie': `gw_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
   }
   if (req.method === 'POST' && path === '/api/admin/logout') {
-    const token = parseCookies(req.headers.cookie).gw_session; sessions.delete(token);
+    const session = sessionFor(req);
+    const token = parseCookies(req.headers.cookie).gw_session;
+    sessions.delete(token);
+    if (session) logAudit({ userId: session.userId, username: session.username, action: 'logout', ip: getClientIp(req), userAgent: req.headers['user-agent'] || '' });
     return respond(res, 200, { ok: true }, { 'set-cookie': 'gw_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
-  const publicMatch = path.match(/^\/api\/public\/(pages|services|faqs)$/);
+  if (req.method === 'GET' && path === '/api/admin/me') {
+    const session = sessionFor(req);
+    if (!session) return respond(res, 401, { error: 'Not signed in.' });
+    return respond(res, 200, { username: session.username, role: session.role });
+  }
+  const publicMatch = path.match(/^\/api\/public\/(pages|services|faqs|team)$/);
   if (req.method === 'GET' && publicMatch) return respond(res, 200, list(publicMatch[1], true));
   if (req.method === 'POST' && path === '/api/public/inquiries') {
     const ip = req.socket.remoteAddress || 'local';
@@ -339,17 +452,94 @@ const server = createServer(async (req, res) => {
   }
 
   if (path.startsWith('/api/admin/')) {
-    if (!authenticated(req)) return respond(res, 401, { error: 'Please sign in to continue.' });
-    const match = path.match(/^\/api\/admin\/(pages|services|faqs|claims|inquiries)(?:\/([a-zA-Z0-9-]+))?$/);
+    const session = sessionFor(req);
+    if (!session) return respond(res, 401, { error: 'Please sign in to continue.' });
+    if (path === '/api/admin/audit' || path === '/api/admin/audit-logs') {
+      if (session.role !== 'admin') return respond(res, 403, { error: 'Administrator access is required.' });
+      if (req.method !== 'GET') return respond(res, 405, { error: 'Method not allowed.' });
+      const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100) || 100));
+      const rows = db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit)
+        .map(row => ({ ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null }));
+      return respond(res, 200, rows);
+    }
+
+    if (path === '/api/admin/users' || path.startsWith('/api/admin/users/')) {
+      if (session.role !== 'admin') return respond(res, 403, { error: 'Only administrators can manage user accounts.' });
+      const userIdMatch = path.match(/^\/api\/admin\/users(?:\/([a-zA-Z0-9-]+))?$/);
+      if (!userIdMatch) return respond(res, 404, { error: 'Not found.' });
+      const userId = userIdMatch[1] || null;
+
+      if (req.method === 'GET' && !userId) {
+        const users = db.prepare('SELECT id, username, role, status, created_at, last_login_at, updated_at FROM users ORDER BY created_at').all();
+        return respond(res, 200, users);
+      }
+      if (req.method === 'POST' && !userId) {
+        let payload; try { payload = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
+        const username = String(payload.username || '').trim().toLowerCase();
+        const password = String(payload.password || '');
+        const role = payload.role === 'admin' ? 'admin' : 'editor';
+        if (!/^[a-z0-9._-]{3,32}$/.test(username)) return respond(res, 400, { error: 'Usernames must be 3–32 characters: letters, numbers, dot, dash or underscore.' });
+        if (password.length < 12) return respond(res, 400, { error: 'Passwords must be at least 12 characters.' });
+        if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) return respond(res, 409, { error: 'That username is already in use.' });
+        const newId = randomUUID();
+        db.prepare('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)').run(newId, username, hashPassword(password), role, 'active');
+        logAudit({ userId: session.userId, username: session.username, action: 'create', collection: 'users', recordId: newId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username, role } });
+        return respond(res, 201, { id: newId });
+      }
+      if (userId && req.method === 'PUT') {
+        const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+        if (!target) return respond(res, 404, { error: 'User not found.' });
+        let payload; try { payload = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
+        const updates = [];
+        const values = [];
+        if (payload.role !== undefined) {
+          if (!['admin', 'editor'].includes(payload.role)) return respond(res, 400, { error: 'Role is invalid.' });
+          if (target.id === session.userId && payload.role !== 'admin') return respond(res, 400, { error: 'You cannot remove your own administrator role.' });
+          updates.push('role = ?'); values.push(payload.role);
+        }
+        if (payload.status !== undefined) {
+          if (!['active', 'disabled'].includes(payload.status)) return respond(res, 400, { error: 'Status is invalid.' });
+          if (target.id === session.userId && payload.status !== 'active') return respond(res, 400, { error: 'You cannot disable your own account.' });
+          updates.push('status = ?'); values.push(payload.status);
+        }
+        if (payload.password !== undefined && payload.password !== '') {
+          if (String(payload.password).length < 12) return respond(res, 400, { error: 'Passwords must be at least 12 characters.' });
+          updates.push('password_hash = ?'); values.push(hashPassword(String(payload.password)));
+        }
+        if (!updates.length) return respond(res, 400, { error: 'Nothing to update.' });
+        updates.push('updated_at = CURRENT_TIMESTAMP');
+        db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values, userId);
+        logAudit({ userId: session.userId, username: session.username, action: 'update', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { fields: Object.keys(payload) } });
+        return respond(res, 200, { ok: true });
+      }
+      if (userId && req.method === 'DELETE') {
+        if (userId === session.userId) return respond(res, 400, { error: 'You cannot delete your own account.' });
+        const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+        if (!target) return respond(res, 404, { error: 'User not found.' });
+        const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'").get().n;
+        if (target.role === 'admin' && admins <= 1) return respond(res, 400, { error: 'At least one active administrator is required.' });
+        db.prepare('DELETE FROM users WHERE id = ?').run(userId);
+        logAudit({ userId: session.userId, username: session.username, action: 'delete', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username: target.username } });
+        return respond(res, 200, { ok: true });
+      }
+      return respond(res, 405, { error: 'Method not allowed.' });
+    }
+
+    const match = path.match(/^\/api\/admin\/(pages|services|faqs|claims|inquiries|team)(?:\/([a-zA-Z0-9-]+))?$/);
     if (!match) return respond(res, 404, { error: 'Not found.' });
     const [, collection, id] = match;
+    const ua = req.headers['user-agent'] || '';
+    const ipAddr = getClientIp(req);
+    const auditContext = { userId: session.userId, username: session.username, collection, ip: ipAddr, userAgent: ua };
     if (req.method === 'GET' && !id) return respond(res, 200, list(collection, false));
     if (req.method === 'POST' && !id) {
       let record; try { record = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
       const issue = validRecord(collection, record, true); if (issue) return respond(res, 400, { error: issue });
-      const newId = randomBytes(12).toString('hex');
-      const slug = String(record.slug || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
+      const newId = randomBytes(6).toString('hex');
+      const slugSource = record.slug || (collection === 'team' ? record.title : '');
+      const slug = String(slugSource || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
       db.prepare('INSERT INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)').run(newId, collection, record.title.trim(), slug, record.status || (collection === 'inquiries' ? 'new' : 'draft'), safeJson(record));
+      logAudit({ ...auditContext, action: 'create', recordId: newId, metadata: { title: record.title.trim(), status: record.status || (collection === 'inquiries' ? 'new' : 'draft') } });
       return respond(res, 201, { id: newId });
     }
     if (id && req.method === 'GET') {
@@ -359,12 +549,15 @@ const server = createServer(async (req, res) => {
     if (id && req.method === 'PUT') {
       let record; try { record = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
       const issue = validRecord(collection, record, false); if (issue) return respond(res, 400, { error: issue });
-      const slug = String(record.slug || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
+      const slugSource = record.slug || (collection === 'team' ? record.title : '');
+      const slug = String(slugSource || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
       const result = db.prepare('UPDATE content SET title = ?, slug = ?, status = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND collection = ?').run(record.title.trim(), slug, record.status || 'draft', safeJson(record), id, collection);
+      if (result.changes) logAudit({ ...auditContext, action: 'update', recordId: id, metadata: { title: record.title.trim(), status: record.status || 'draft' } });
       return result.changes ? respond(res, 200, { ok: true }) : respond(res, 404, { error: 'Record not found.' });
     }
     if (id && req.method === 'DELETE') {
       const result = db.prepare('DELETE FROM content WHERE id = ? AND collection = ?').run(id, collection);
+      if (result.changes) logAudit({ ...auditContext, action: 'delete', recordId: id });
       return result.changes ? respond(res, 200, { ok: true }) : respond(res, 404, { error: 'Record not found.' });
     }
     return respond(res, 405, { error: 'Method not allowed.' });

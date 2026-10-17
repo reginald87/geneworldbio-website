@@ -10,6 +10,7 @@ import * as providers from './pages/providers.js';
 import * as patients from './pages/patients.js';
 import * as quality from './pages/quality.js';
 import * as about from './pages/about.js';
+import * as team from './pages/team.js';
 import * as contact from './pages/contact.js';
 import * as legal from './pages/legal.js';
 import * as admin from './pages/admin.js';
@@ -24,6 +25,7 @@ const routes = [
   { path: '/patients', page: patients },
   { path: '/quality-compliance', page: quality },
   { path: '/about', page: about },
+  { path: '/team', page: team },
   { path: '/contact', page: contact },
   { path: '/privacy-notice', page: legal },
   { path: '/terms', page: legal },
