@@ -1,156 +1,129 @@
+import { createRouter } from './lib/router.js';
+import { loadPublicContent } from './lib/store.js';
+import { setDocumentTitle, setMetaDescription } from './lib/dom.js';
+import { setCanonical, setStructuredData } from './lib/seo.js';
+import { initAnalytics, trackPageView } from './lib/analytics.js';
+import { header, footer } from './components/layout.js';
+import * as home from './pages/home.js';
+import * as services from './pages/services.js';
+import * as providers from './pages/providers.js';
+import * as patients from './pages/patients.js';
+import * as quality from './pages/quality.js';
+import * as about from './pages/about.js';
+import * as contact from './pages/contact.js';
+import * as legal from './pages/legal.js';
+import * as admin from './pages/admin.js';
+import * as notFound from './pages/notFound.js';
+
 const app = document.querySelector('#app');
-const paths = ['home', 'services', 'healthcare-providers', 'patients', 'quality-compliance', 'about', 'contact'];
-const names = ['Home', 'Services', 'Healthcare Providers', 'Patients', 'Quality & Compliance', 'About', 'Contact'];
-const labels = { pages: 'Pages', services: 'Services', faqs: 'FAQs', claims: 'Claims register', inquiries: 'Enquiries' };
-const icons = {
-  arrow: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
-  plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>',
-  check: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
-  spark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2c-1.4 6.3-3.7 8.6-10 10 6.3 1.4 8.6 3.7 10 10 1.4-6.3 3.7-8.6 10-10C15.7 10.6 13.4 8.3 12 2Z"/></svg>'
-};
-const esc = (value = '') => String(value).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
-const go = (path) => { location.hash = path; window.scrollTo(0, 0); };
-async function api(path, opts = {}) {
-  const response = await fetch(`/api${path}`, { credentials: 'same-origin', headers: { 'content-type': 'application/json', ...(opts.headers || {}) }, ...opts });
-  let data = {}; try { data = await response.json(); } catch { /* empty response */ }
-  if (!response.ok) throw new Error(data.error || 'Something went wrong. Please try again.');
-  return data;
+
+const routes = [
+  { path: '/', page: home },
+  { path: '/services', page: services },
+  { path: '/healthcare-providers', page: providers },
+  { path: '/patients', page: patients },
+  { path: '/quality-compliance', page: quality },
+  { path: '/about', page: about },
+  { path: '/contact', page: contact },
+  { path: '/privacy-notice', page: legal },
+  { path: '/terms', page: legal },
+  { path: '/complaints', page: legal },
+  { path: '/accessibility', page: legal },
+  { path: '/cookies', page: legal },
+  { path: '/admin', page: admin, bare: true, bodyClass: 'admin-body' },
+];
+
+function currentMenu() {
+  const toggle = app.querySelector('.menu-toggle');
+  const nav = app.querySelector('.main-nav');
+  return toggle && nav ? { toggle, nav } : null;
 }
 
-function logo() { return `<a class="brand" href="#home" aria-label="GeneWorldBio home"><span class="brand-mark"><i></i><i></i><i></i></span><span>Gene<span>World</span>Bio<small>DIAGNOSTICS · CONNECTED WITH CARE</small></span></a>`; }
-function header() {
-  return `<header class="site-header"><div class="container nav-wrap">${logo()}<button class="menu-toggle" aria-label="Open menu" aria-expanded="false"><span></span><span></span></button><nav class="main-nav">${names.slice(1).map((name, i) => `<a href="#${paths[i+1]}">${name}</a>`).join('')}<a class="nav-cta" href="#contact">Partner with us ${icons.arrow}</a></nav></div></header>`;
-}
-function footer() {
-  return `<footer class="site-footer"><div class="container footer-top"><div class="footer-brand">${logo()}<p>Building clearer diagnostic pathways through thoughtful partnerships and connected care.</p></div><div><h3>Explore</h3>${names.slice(1).map((n,i)=>`<a href="#${paths[i+1]}">${n}</a>`).join('')}</div><div><h3>Information</h3><a href="#privacy-notice">Privacy notice</a><a href="#terms">Website terms</a><a href="#cookies">Cookie information</a><a href="#accessibility">Accessibility</a><a href="#complaints">Complaints & feedback</a><a href="#admin">Staff sign in</a></div><div><h3>Get in touch</h3><p>For provider, patient, supplier and general enquiries, choose the route that best fits your needs.</p><a class="footer-link" href="#contact">Visit contact page ${icons.arrow}</a></div></div><div class="container footer-bottom"><span>© ${new Date().getFullYear()} GENEWORLDBIO LTD · RC 9795367</span><span>No. 7B, Azikoro Road, Ekeki, Yenagoa, Bayelsa State, Nigeria</span></div></footer>`;
-}
-const btn = (text, href, kind = 'primary') => `<a class="button ${kind}" href="${href}">${text} ${icons.arrow}</a>`;
-const iconBox = (symbol) => `<span class="icon-box">${symbol}</span>`;
-const eyebrow = (text) => `<span class="eyebrow"><i></i>${text}</span>`;
-
-function home() {
-  return `<main>
-    <section class="hero"><div class="hero-grid"></div><div class="container hero-inner"><div class="hero-copy">${eyebrow('DIAGNOSTICS, CONNECTED WITH CARE')}<h1>A clearer path to better <em>health.</em></h1><p>We bring healthcare teams, diagnostic pathways and people closer together—with thoughtful support at every step.</p><div class="hero-actions">${btn('Partner with us','#healthcare-providers')}${btn('Explore our services','#services','secondary')}</div><div class="hero-note"><span class="note-icon">${icons.check}</span><span>Designed around trusted partnerships<br><strong>and more connected access</strong></span></div></div><div class="hero-art" aria-label="Illustration of connected healthcare"><div class="art-orbit orbit-one"></div><div class="art-orbit orbit-two"></div><div class="art-card card-top"><span class="mini-dot"></span><span>Connected care</span><b>01 — 04</b></div><div class="art-disc"><div class="disc-ring"></div><div class="molecule"><i></i><i></i><i></i><i></i><i></i><i></i><span></span></div><div class="disc-label">A better<br>pathway</div></div><div class="art-card card-bottom"><span class="green-dot"></span><span>Provider network</span>${icons.arrow}</div><span class="art-caption">Precision in every connection</span></div></div><div class="container hero-foot"><span>Thoughtfully connected pathways</span><span class="hero-foot-line"></span><span>Built for people. Designed for care.</span></div></section>
-    <section class="principles"><div class="container principle-row"><div><span class="principle-number">01</span><strong>Institution-led</strong><span>Practical partnerships that work for care teams.</span></div><div><span class="principle-number">02</span><strong>Quality-minded</strong><span>Clear standards shape every conversation.</span></div><div><span class="principle-number">03</span><strong>Connected access</strong><span>Guidance that helps people find their next step.</span></div></div></section>
-    <section class="section services-section" id="service-preview"><div class="container"><div class="section-head"><div>${eyebrow('HOW WE CAN HELP')}<h2>Support that moves<br>care <em>forward.</em></h2></div><p>From referral pathways to specimen logistics, we help teams plan the practical details behind diagnostic access.</p></div><div class="service-grid">${serviceCards()}</div><div class="section-end">${btn('View all services','#services','text')}</div></div></section>
-    <section class="partner-band"><div class="container partner-layout"><div class="partner-art"><div class="partner-ring"></div><div class="partner-cross">+</div><div class="partner-stat"><span>Care works better</span><b>together.</b>${icons.spark}</div></div><div class="partner-copy">${eyebrow('FOR HEALTHCARE TEAMS')}<h2>Good partnerships<br>make better <em>pathways.</em></h2><p>We work with hospitals, clinics and laboratories to shape referral and logistics arrangements around real operational needs.</p><ul><li>${icons.check} A dependable referral discussion</li><li>${icons.check} Clear logistics planning</li><li>${icons.check} A responsive point of contact</li></ul>${btn('Start a conversation','#healthcare-providers')}</div></div></section>
-    <section class="section approach-section"><div class="container"><div class="approach-head">${eyebrow('OUR COMMITMENT')}<h2>Careful by nature.<br><em>Clear by design.</em></h2><p>Trust is built through open communication, responsible claims and respect for every person’s information.</p></div><div class="approach-grid"><article>${iconBox('01')}<h3>Clinical accountability</h3><p>Scientific and service information should be clear, reviewed and owned by the right people.</p></article><article>${iconBox('02')}<h3>Privacy with purpose</h3><p>We ask for only what is needed to route an enquiry. Sensitive clinical information stays out of public forms.</p></article><article>${iconBox('03')}<h3>Thoughtful handling</h3><p>Referral and specimen conversations begin with practical requirements and agreed responsibilities.</p></article></div><a class="text-link" href="#quality-compliance">Our quality approach ${icons.arrow}</a></div></section>
-    <section class="patient-band"><div class="container patient-layout"><div>${eyebrow('FOR PATIENTS & CARERS')}<h2>Know what to expect.<br>Feel supported <em>along the way.</em></h2><p>We want diagnostic pathways to feel easier to understand. Find practical guidance and a clear route for your questions.</p>${btn('Find patient support','#patients','light')}</div><div class="journey"><div class="journey-line"></div><div class="journey-step"><span>01</span><div><b>Understand</b><small>Get clear information</small></div></div><div class="journey-step"><span>02</span><div><b>Prepare</b><small>Know your next step</small></div></div><div class="journey-step"><span>03</span><div><b>Connect</b><small>Find the right support</small></div></div></div></div></section>
-    <section class="final-cta"><div class="container cta-inner"><div>${eyebrow('LET’S MOVE FORWARD')}<h2>Start with a <em>conversation.</em></h2><p>Whether you represent a care team or need patient guidance, we’ll help you find the right route.</p></div>${btn('Get in touch','#contact')}</div></section>
-  </main>`;
-}
-function serviceCards() {
-  const all = window.contentServices || [];
-  const items = all.length ? all.slice(0,4).map(x=>({title:x.data.title || x.title, text:x.data.description || x.data.summary, id:x.slug || x.data.slug})) : [
-    { title:'Specialist diagnostics', text:'A thoughtful route to specialist diagnostic services through an appropriate provider or referral pathway.', id:'specialist-diagnostics' },
-    { title:'Molecular & referral testing', text:'Talk with our team about referral testing needs and a pathway that fits your organisation.', id:'molecular-referral' },
-    { title:'Specimen collection & logistics', text:'Plan specimen handling and logistics requirements with a member of our provider team.', id:'specimen-logistics' },
-    { title:'Laboratory solutions', text:'Explore operational support and laboratory-solutions discussions for institutions.', id:'laboratory-solutions' }
-  ];
-  return items.map((item,i)=>`<a class="service-card" href="#contact"><div class="service-index">0${i+1}</div><div class="service-card-icon">${['◌','⌘','↗','⌂'][i]}</div><h3>${esc(item.title)}</h3><p>${esc(item.text || 'Talk with our team about the right service pathway.')}</p><span class="circle-arrow">${icons.arrow}</span></a>`).join('');
-}
-function interior(slug) {
-  const page = (window.contentPages || []).find(item => item.slug === slug);
-  const title = page?.data?.title || page?.title || names[paths.indexOf(slug)] || slug.replaceAll('-', ' ');
-  const summary = page?.data?.summary || 'Find the right information and a clear next step with the GeneWorldBio team.';
-  const body = {
-    services: `<div class="interior-grid">${serviceCards()}</div><div class="notice"><b>Service availability</b><p>Service scope, access and operating availability are confirmed through a direct enquiry. The categories shown here describe discussion pathways, not a guarantee of current testing availability.</p></div>${btn('Ask about a service','#contact')}`,
-    'healthcare-providers': `<div class="split-feature"><div><h2>Built around your team's needs.</h2><p>We welcome conversations with hospitals, clinics and independent laboratories about dependable referral capacity, controlled logistics, escalation routes and account support.</p><ul class="check-list"><li>${icons.check} Referral service requirements</li><li>${icons.check} Specimen handling and logistics</li><li>${icons.check} Preferred contact and escalation pathways</li></ul>${btn('Request a partnership discussion','#contact')}</div><div class="side-panel"><span class="panel-label">PARTNERSHIP DISCUSSION</span><div class="panel-mark">${icons.spark}</div><h3>Let’s start with the practical details.</h3><p>Tell us about your organisation, location, testing needs and logistics requirements.</p></div></div>`,
-    patients: `<div class="patient-steps"><article><span>01</span><h3>What happens?</h3><p>Your care team can explain the test pathway. If you need general support, contact us and we’ll help route your question.</p></article><article><span>02</span><h3>How do I prepare?</h3><p>Preparation depends on the service. Follow the instructions provided by your clinician or the responsible provider.</p></article><article><span>03</span><h3>Where do I go?</h3><p>Collection arrangements are confirmed through your care team or direct service contact. We do not publish unverified collection locations.</p></article><article><span>04</span><h3>How do I get support?</h3><p>For clinical questions, contact your healthcare provider. For general pathway support, use the patient enquiry form.</p></article></div><div class="notice warm"><b>For urgent medical needs</b><p>This website is not a substitute for medical advice or urgent clinical care. Contact your care team or local emergency services.</p></div>${btn('Ask for patient support','#contact')}`,
-    'quality-compliance': `<div class="quality-intro"><h2>A careful approach to quality and trust.</h2><p>Quality is built through clear ownership, responsible communication and well-defined processes. We aim to publish evidence only when it has been verified and approved for public use.</p></div><div class="quality-grid"><article><span>01</span><h3>Clinical accountability</h3><p>Scientific, test-performance and service claims should be reviewed by an appropriately qualified lead.</p></article><article><span>02</span><h3>Partner selection</h3><p>Referral and partner-laboratory discussions should be grounded in defined responsibilities and service expectations.</p></article><article><span>03</span><h3>Privacy controls</h3><p>Public enquiries are limited to contact and routing information; results and genomic files are not accepted here.</p></article><article><span>04</span><h3>Open feedback</h3><p>Questions, concerns and complaints should have a clear route and a responsible owner.</p></article></div><div class="notice"><b>Claims are reviewed before publication</b><p>Licences, registrations, accreditations, test availability, turnaround times, prices and collection locations require verification from the responsible owner before publication.</p></div>`,
-    about: `<div class="split-feature about-feature"><div><h2>A practical, Nigeria-first vision.</h2><p>GeneWorldBio is building a diagnostics and laboratory-solutions business focused on connected access, dependable provider relationships and a thoughtful patient experience.</p><p>Our launch approach centres on institutional partnerships, referral pathways and clear patient information. We will introduce additional service lines only when they are operationally justified.</p>${btn('Talk with our team','#contact')}</div><div class="about-card"><span class="about-big">G<span>W</span>B</span><div class="about-card-rule"></div><p>Connected pathways.<br>Thoughtful care.</p></div></div>`,
-    contact: contactForm(),
-    'privacy-notice': `<div class="legal-copy"><p>We collect the minimum information needed to route and respond to your enquiry. Contact details and the information you choose to share may be stored by our staff for follow-up and service improvement.</p><h2>What not to send</h2><p>Do not submit clinical results, detailed medical histories, identity documents or genomic files through this website. If you need clinical support, contact your healthcare provider.</p><h2>Access and retention</h2><p>Enquiries are accessible to staff responsible for the relevant category. Retention periods, lawful purposes, and access ownership must be confirmed by the company’s privacy lead before launch.</p><h2>Your questions</h2><p>For a privacy question or complaint, choose “General enquiry” on the contact page and include “Privacy” in your subject.</p><p class="notice"><b>Launch requirement</b><br>This starter notice needs review and approval by the responsible privacy and legal owners before publication.</p></div>`,
-    terms: `<div class="legal-copy"><h2>General information</h2><p>Website content is general information and does not replace medical advice, diagnosis or treatment. Always consult a qualified healthcare professional about clinical decisions.</p><h2>Availability and claims</h2><p>Service availability, prices, turnaround times, locations and regulatory status must be confirmed directly with an authorised GeneWorldBio representative.</p><h2>Urgent care</h2><p>Do not use this website for urgent medical needs. Contact your care team or local emergency services.</p><p class="notice"><b>Launch requirement</b><br>These terms need review and approval by the responsible legal owner before publication.</p></div>`,
-    complaints: contactForm('feedback')
-    ,accessibility: `<div class="legal-copy"><h2>Our approach</h2><p>We aim to make this website accessible and usable on mobile and desktop devices. Our interface uses semantic page landmarks, keyboard-operable navigation, visible focus styles, form labels, and responsive layouts.</p><h2>Tell us about a barrier</h2><p>If a page or feature is difficult to use, contact us through the general enquiry form and include “Accessibility” in your message. Please describe the page and what happened so we can review it.</p><p class="notice"><b>Launch review</b><br>Complete an accessibility review against WCAG 2.2 AA before launch and assign an owner for ongoing checks.</p></div>`,
-    cookies: `<div class="legal-copy"><h2>Essential cookies only</h2><p>The public website does not use advertising or analytics cookies. The staff workspace uses a secure, essential session cookie after an administrator signs in. It expires after eight hours or when the administrator signs out.</p><h2>Your choices</h2><p>No non-essential cookies are set on the public site, so no tracking consent is required for the current launch build. If analytics or other non-essential tools are introduced later, update this notice and add a consent control before enabling them.</p></div>`
-  }[slug] || `<div class="notice"><p>${esc(summary)}</p></div>${btn('Contact us','#contact')}`;
-  return `<main class="interior-page"><section class="interior-hero"><div class="container">${eyebrow(slug === 'patients' ? 'PATIENTS & CARERS' : slug === 'healthcare-providers' ? 'FOR PROVIDERS' : 'GENEWORLDBIO')}<h1>${esc(title)}<em>.</em></h1><p>${esc(summary)}</p></div><div class="interior-orbit"></div></section><section class="section interior-content"><div class="container">${body}</div></section></main>`;
-}
-function contactForm(force = '') {
-  return `<div class="contact-layout"><div class="contact-aside"><h2>How can we<br>help <em>you?</em></h2><p>Choose the enquiry type that fits best. We’ll use it to route your message to the appropriate team.</p><div class="contact-note"><span class="note-icon">${icons.check}</span><p>Please do not send clinical results, detailed medical histories or genomic files.</p></div><div class="contact-address"><span>REGISTERED OFFICE</span><p>GENEWORLDBIO LTD<br>No. 7B, Azikoro Road, Ekeki<br>Yenagoa, Bayelsa State, Nigeria</p></div></div><form class="form-card enquiry-form"><div class="form-heading"><span class="form-step">01 / 01</span><h3>Send an enquiry</h3><p>Fields marked with * are required.</p></div><div class="form-row"><label>Your name *<input name="name" required maxlength="100" autocomplete="name" placeholder="Full name"></label><label>Email address *<input name="email" type="email" required maxlength="180" autocomplete="email" placeholder="name@example.com"></label></div><div class="form-row"><label>Enquiry type *<select name="category" required>${['provider','patient','research','supplier','general'].map((x,i)=>`<option value="${x}" ${force==='feedback'&&x==='general'?'selected':''}>${['Healthcare provider','Patient or carer','Research collaboration','Supplier','General enquiry'][i]}${force==='feedback'&&i===4?' / Feedback':''}</option>`).join('')}</select></label><label>Organisation <span class="optional">(optional)</span><input name="organisation" maxlength="150" placeholder="Organisation name"></label></div><div class="provider-fields" hidden><div class="form-row"><label>Organisation location<input name="location" maxlength="200" placeholder="City, state"></label><label>Estimated monthly volume<input name="volume" maxlength="100" placeholder="Approximate number or range"></label></div><div class="form-row"><label>Testing needs<textarea name="needs" maxlength="500" rows="2" placeholder="Service or referral needs"></textarea></label><label>Logistics requirement<textarea name="logistics" maxlength="500" rows="2" placeholder="Collection, handling or transport needs"></textarea></label></div><label>Preferred contact method<select name="contactMethod"><option value="">Choose one</option><option>Email</option><option>Phone</option><option>Video call</option></select></label></div><label class="full-label">How can we help? *<textarea name="message" required maxlength="3000" rows="4" placeholder="Share only the details needed to route your enquiry."></textarea></label><label class="honeypot" aria-hidden="true">Leave this field empty<input name="website" tabindex="-1" autocomplete="off"></label><label class="consent"><input type="checkbox" required><span>I agree to the <a href="#privacy-notice">privacy notice</a> and understand not to include sensitive clinical information.</span></label><button class="button primary" type="submit">Send enquiry ${icons.arrow}</button><div class="form-result" role="status" aria-live="polite"></div><small class="form-privacy">Your information is used to route and respond to your enquiry.</small></form></div>`;
+function setMenuOpen(toggle, nav, open) {
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.setAttribute('aria-label', open ? 'Close menu' : 'Open menu');
+  nav.classList.toggle('open', open);
 }
 
-const modules = ['pages','services','faqs','claims','inquiries'];
-const fields = {
-  pages: ['title','slug','eyebrow','summary','status'], services: ['title','slug','description','audience','access','status'],
-  faqs: ['title','question','answer','status'], claims: ['title','claim','evidence','owner','reviewDate','status'],
-  inquiries: ['title','name','email','category','organisation','location','needs','volume','logistics','contactMethod','message','status']
-};
-function adminShell(active='pages', records=[]) {
-  return `<div class="admin-shell"><aside class="admin-sidebar">${logo()}<div class="admin-label">WORKSPACE</div><nav>${modules.map(x=>`<button class="admin-nav ${x===active?'active':''}" data-module="${x}"><span>${labels[x]}</span><small>${x==='inquiries'?records.length:''}</small></button>`).join('')}</nav><button class="logout-btn">Sign out ${icons.arrow}</button><div class="admin-identity"><span class="avatar">GW</span><span><b>Content team</b><small>Administrator</small></span></div></aside><main class="admin-main"><div class="admin-top"><div><span class="admin-breadcrumb">WORKSPACE / ${labels[active].toUpperCase()}</span><h1>${labels[active]}</h1><p>Manage controlled website content and enquiries.</p></div><div class="admin-actions">${active!=='inquiries'?`<button class="button primary create-record">${icons.plus} Create ${active==='pages'?'page':active.slice(0,-1)}</button>`:''}<button class="admin-logout">Sign out</button></div></div><div class="admin-toolbar"><label class="search-box">⌕ <input class="admin-search" placeholder="Search ${labels[active].toLowerCase()}..." /></label><span class="record-count">${records.length} ${records.length===1?'record':'records'}</span></div><div class="admin-records">${records.length?records.map(rowCard).join(''):`<div class="empty-state"><span>✳</span><h2>No ${labels[active].toLowerCase()} yet</h2><p>New records will appear here when they are added.</p></div>`}</div></main></div>`;
-}
-function rowCard(row) {
-  const data = row.data || {}; const title = data.title || row.title || 'Untitled';
-  const sub = row.collection === 'inquiries' ? `${data.name || 'Visitor'} · ${data.email || ''}` : row.slug || data.slug || 'No page address';
-  const pill = row.status || 'draft';
-  return `<article class="record-card" data-search="${esc(`${title} ${sub} ${JSON.stringify(data)}`.toLowerCase())}"><span class="record-icon">${row.collection==='inquiries'?'↗':row.collection==='pages'?'▤':row.collection==='services'?'◌':'✳'}</span><div class="record-info"><h3>${esc(title)}</h3><span>${esc(sub)}</span></div><span class="status-pill ${esc(pill)}">${esc(pill.replace('-', ' '))}</span><button class="record-edit" data-edit="${esc(row.id)}" aria-label="Edit ${esc(title)}">Edit ${icons.arrow}</button></article>`;
-}
-function loginPage(error='') {
-  return `<main class="login-screen"><div class="login-art"><div class="login-orb"></div><div class="login-orb small"></div>${logo()}<div class="login-art-copy"><span>GENEWORLDBIO / CONTENT WORKSPACE</span><h1>Keep every<br>detail <em>connected.</em></h1><p>A considered space to manage content, enquiries and the details that shape your website.</p></div><span class="login-footer">GENEWORLDBIO LTD · RC 9795367</span></div><div class="login-form-side"><div class="login-form">${logo()}<span class="eyebrow">STAFF ACCESS</span><h2>Welcome back.</h2><p>Sign in to manage the GeneWorldBio website.</p><form class="login-form-inner"><label>Administrator password<input name="password" type="password" required autocomplete="current-password" placeholder="Enter your password"></label><button class="button primary" type="submit">Sign in ${icons.arrow}</button><div class="login-error" role="alert">${esc(error)}</div></form><small>Access is intended for approved website administrators.</small></div></div></main>`;
-}
-async function loadAdmin(module='pages') {
-  try { const records = await api(`/admin/${module}`); app.innerHTML = adminShell(module, records); bindAdmin(records); }
-  catch (err) { if (err.message.includes('sign in')) { app.innerHTML = loginPage(); bindLogin(); } else app.innerHTML = `<div class="admin-error">${esc(err.message)}</div>`; }
-}
-function bindLogin() {
-  document.querySelector('.login-form-inner')?.addEventListener('submit', async e=>{
-    e.preventDefault(); const password = new FormData(e.currentTarget).get('password');
-    const error = document.querySelector('.login-error'); error.textContent = '';
-    try { await api('/admin/login',{ method:'POST', body:JSON.stringify({password}) }); await loadAdmin(); }
-    catch(err) { error.textContent = err.message; }
+let menuDocumentBound = false;
+
+function bindMenu() {
+  const menu = currentMenu();
+  if (!menu) return;
+  const { toggle, nav } = menu;
+
+  toggle.addEventListener('click', () => {
+    setMenuOpen(toggle, nav, toggle.getAttribute('aria-expanded') !== 'true');
+  });
+
+  nav.addEventListener('click', (event) => {
+    if (event.target.closest('a')) setMenuOpen(toggle, nav, false);
+  });
+
+  if (menuDocumentBound) return;
+  menuDocumentBound = true;
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    const live = currentMenu();
+    if (live && live.toggle.getAttribute('aria-expanded') === 'true') {
+      setMenuOpen(live.toggle, live.nav, false);
+      live.toggle.focus();
+    }
+  });
+
+  document.addEventListener('pointerdown', (event) => {
+    const live = currentMenu();
+    if (!live || live.toggle.getAttribute('aria-expanded') !== 'true') return;
+    if (live.nav.contains(event.target) || live.toggle.contains(event.target)) return;
+    setMenuOpen(live.toggle, live.nav, false);
   });
 }
-function recordForm(module, record={}) {
-  const data = record.data || {}; const current = { ...data, title: data.title || record.title || '', slug: data.slug || record.slug || '', status: record.status || data.status || (module==='inquiries'?'new':'draft') };
-  return `<form class="record-form" data-module="${module}" data-id="${esc(record.id || '')}"><div class="record-form-grid">${(fields[module] || ['title','status']).map(key=>{
-    const val = current[key] || ''; const label = ({slug:'URL slug',eyebrow:'Section label',summary:'Short description',description:'Description',access:'Access information',question:'Question',answer:'Answer',claim:'Public claim',evidence:'Evidence or source',owner:'Approving owner',reviewDate:'Review date',email:'Email address',category:'Enquiry type',location:'Location',needs:'Testing needs',volume:'Estimated volume',logistics:'Logistics requirement',contactMethod:'Preferred contact method',message:'Enquiry message',organisation:'Organisation',name:'Name'})[key] || key[0].toUpperCase()+key.slice(1);
-    if(key==='status') return `<label>${label}<select name="${key}">${(module==='inquiries'?['new','in-progress','resolved','archived']:['draft','published']).map(s=>`<option ${current.status===s?'selected':''}>${s}</option>`).join('')}</select></label>`;
-    const multiline = ['summary','description','access','answer','claim','evidence','message','needs','logistics'].includes(key);
-    return `<label>${label}${['title','email','message','question','summary'].includes(key)?' *':''}${multiline?`<textarea name="${key}" ${['title','message'].includes(key)?'required':''} maxlength="${key==='message'?3000:3000}" rows="${key==='message'?4:3}">${esc(val)}</textarea>`:`<input name="${key}" value="${esc(val)}" ${key==='title'?'required':''} ${key==='email'?'type="email"':''}>`}</label>`;
-  }).join('')}</div><div class="record-form-actions"><span class="record-form-error" role="alert"></span>${record.id?`<button type="button" class="delete-record">Delete</button>`:''}<button type="button" class="cancel-record">Cancel</button><button class="button primary">Save changes</button></div></form>`;
+
+function markMainLandmark() {
+  const main = app.querySelector('main');
+  if (main && !main.id) main.id = 'main-content';
 }
-function bindAdmin(records) {
-  document.querySelectorAll('[data-module]').forEach(button=>button.addEventListener('click',()=>loadAdmin(button.dataset.module)));
-  document.querySelector('.logout-btn')?.addEventListener('click',async()=>{await api('/admin/logout',{method:'POST'}); app.innerHTML=loginPage();bindLogin();});
-  document.querySelector('.admin-logout')?.addEventListener('click',async()=>{await api('/admin/logout',{method:'POST'}); app.innerHTML=loginPage();bindLogin();});
-  document.querySelector('.create-record')?.addEventListener('click',()=>openEditor(document.querySelector('.admin-main'),activeModule(),{}));
-  document.querySelectorAll('[data-edit]').forEach(button=>button.addEventListener('click',()=>openEditor(button.closest('.record-card'), activeModule(),records.find(r=>r.id===button.dataset.edit))));
-  document.querySelector('.admin-search')?.addEventListener('input',e=>document.querySelectorAll('.record-card').forEach(card=>card.hidden=!card.dataset.search.includes(e.target.value.toLowerCase())));
+
+async function handle(definition, ctx) {
+  const slug = definition.page === legal ? ctx.__raw.replace(/^\//, '') : undefined;
+
+  if (!definition.bare) await loadPublicContent();
+
+  const html = await definition.page.render(slug, ctx);
+  app.innerHTML = definition.bare ? html : `${header()}${html}${footer()}`;
+  markMainLandmark();
+
+  setDocumentTitle(definition.page.title);
+  const description =
+    definition.page === home
+      ? 'GeneWorldBio connects healthcare providers and patients with clear diagnostics and specimen support pathways.'
+      : `${definition.page.title} — GeneWorldBio, diagnostics connected with care.`;
+  setMetaDescription(description);
+  setCanonical(location.pathname);
+  setStructuredData({ title: `${definition.page.title} | GeneWorldBio`, description });
+  trackPageView(location.pathname, definition.page.title);
+
+  definition.page.mount?.(app, slug);
+  if (!definition.bare) bindMenu();
 }
-function activeModule() { return document.querySelector('.admin-nav.active')?.dataset.module || 'pages'; }
-function openEditor(anchor, module, record) {
-  document.querySelector('.record-editor')?.remove();
-  const wrap = document.createElement('section'); wrap.className='record-editor'; wrap.innerHTML=`<div class="editor-head"><div><span class="admin-breadcrumb">${labels[module].toUpperCase()}</span><h2>${record.id?'Edit record':'Create record'}</h2></div><button class="editor-close" aria-label="Close">×</button></div>${recordForm(module,record)}`;
-  anchor.insertAdjacentElement('afterend',wrap);
-  wrap.querySelector('.editor-close').onclick=()=>wrap.remove(); wrap.querySelector('.cancel-record').onclick=()=>wrap.remove();
-  wrap.querySelector('.delete-record')?.addEventListener('click',async()=>{if(!confirm('Delete this record? This cannot be undone.')) return;try{await api(`/admin/${module}/${record.id}`,{method:'DELETE'});loadAdmin(module);}catch(err){wrap.querySelector('.record-form-error').textContent=err.message;}});
-  wrap.querySelector('form').addEventListener('submit',async e=>{
-    e.preventDefault(); const payload=Object.fromEntries(new FormData(e.currentTarget));
-    try { await api(`/admin/${module}${record.id?`/${record.id}`:''}`,{method:record.id?'PUT':'POST',body:JSON.stringify(payload)}); loadAdmin(module); }
-    catch(err){wrap.querySelector('.record-form-error').textContent=err.message;}
-  });
-  wrap.scrollIntoView({behavior:'smooth',block:'start'});
-}
-async function render() {
-  const route=(location.hash.slice(1)||'home').replace(/^\//,'');
-  if(route==='admin'||route.startsWith('admin/')) { document.body.className='admin-body'; loadAdmin(); return; }
-  document.body.className='';
-  try { [window.contentPages, window.contentServices] = await Promise.all([api('/public/pages'),api('/public/services')]); } catch { window.contentPages=[]; window.contentServices=[]; }
-  const slug=paths.includes(route)||['privacy-notice','terms','complaints','accessibility','cookies'].includes(route)?route:'home';
-  app.innerHTML=`${header()}${slug==='home'?home():interior(slug)}${footer()}`;
-  document.querySelector('.menu-toggle')?.addEventListener('click', e=>{const open=e.currentTarget.getAttribute('aria-expanded')==='true';e.currentTarget.setAttribute('aria-expanded',String(!open));document.querySelector('.main-nav').classList.toggle('open',!open);});
-  document.querySelectorAll('.main-nav a').forEach(a=>a.addEventListener('click',()=>{document.querySelector('.main-nav').classList.remove('open');document.querySelector('.menu-toggle').setAttribute('aria-expanded','false');}));
-  document.querySelector('.enquiry-form')?.addEventListener('submit', async e=>{
-    e.preventDefault(); const form=e.currentTarget; const out=form.querySelector('.form-result'); const values=Object.fromEntries(new FormData(form));
-    out.textContent='Sending…'; out.className='form-result';
-    try { await api('/public/inquiries',{method:'POST',body:JSON.stringify(values)}); form.reset();out.textContent='Thank you. Your enquiry has been received.';out.classList.add('success'); }
-    catch(err){out.textContent=err.message;out.classList.add('error');}
-  });
-  document.querySelector('.enquiry-form [name="category"]')?.addEventListener('change',e=>{
-    document.querySelector('.provider-fields').hidden=e.target.value!=='provider';
-  });
-}
-window.addEventListener('hashchange',render);
-render();
+
+const router = createRouter(
+  routes.map((definition) => ({
+    path: definition.path,
+    bodyClass: definition.bodyClass,
+    handler: (ctx) => handle(definition, ctx),
+  })),
+  {
+    notFound: async () => {
+      await loadPublicContent();
+      app.innerHTML = `${header()}${await notFound.render()}${footer()}`;
+      markMainLandmark();
+      setDocumentTitle(notFound.title);
+      bindMenu();
+    },
+  }
+);
+
+initAnalytics();
+router.start();
