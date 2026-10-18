@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { mailerConfigured, sendEnquiryEmails } from './email.js';
 import { turnstileConfigured, verifyTurnstile } from './turnstile.js';
@@ -26,6 +26,18 @@ if (!secret || secret.length < 12) {
 const dbPath = resolve(process.env.DB_PATH || 'data/geneworldbio.sqlite');
 mkdirSync(dirname(dbPath), { recursive: true });
 const db = new DatabaseSync(dbPath);
+
+const uploadsDir = resolve(process.env.UPLOADS_DIR || 'data/uploads');
+mkdirSync(uploadsDir, { recursive: true });
+const maxUploadBytes = 5 * 1024 * 1024;
+const uploadTypes = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+};
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
@@ -65,10 +77,18 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS audit_logs_created ON audit_logs(created_at);
   CREATE INDEX IF NOT EXISTS audit_logs_user ON audit_logs(user_id);
+  CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    role TEXT NOT NULL,
+    expires INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires);
 `);
 
 const collections = new Set(['pages', 'services', 'faqs', 'claims', 'inquiries', 'team']);
-const sessions = new Map();
 const requestCounts = new Map();
 const inquiryCounts = new Map();
 const safeJson = (value) => JSON.stringify(value);
@@ -126,6 +146,64 @@ const serviceCatalog = [
 
 const serviceAccess = 'Availability and access are confirmed through a direct enquiry.';
 
+const teamCatalog = [
+  {
+    slug: 'adaeze-okafor',
+    title: 'Dr. Adaeze Okafor',
+    role: 'Founder & Chief Executive Officer',
+    credentials: 'MBBS, MSc Public Health',
+    location: 'Yenagoa, Bayelsa State',
+    education: 'MBBS, University of Port Harcourt; MSc Public Health, London School of Hygiene & Tropical Medicine',
+    focus: ['Diagnostic access strategy', 'Institutional partnerships', 'Public-health genomics'],
+    bio: 'Adaeze founded GeneWorldBio to close the gap between world-class diagnostics and the communities that need them most. She has spent more than fifteen years building clinical and public-health programmes across Nigeria, with a focus on making complex testing understandable and reachable. She leads the company’s vision, partnerships and long-term service strategy.',
+    linkedin: 'https://www.linkedin.com/company/geneworldbio',
+    order: 1,
+  },
+  {
+    slug: 'ibrahim-yusuf',
+    title: 'Dr. Ibrahim Yusuf',
+    role: 'Director, Laboratory Science & Quality',
+    credentials: 'PhD, Clinical Microbiology',
+    location: 'Abuja, FCT',
+    education: 'PhD Clinical Microbiology, Ahmadu Bello University; Postdoctoral fellowship in molecular diagnostics',
+    focus: ['Laboratory quality systems', 'Molecular diagnostics', 'Antimicrobial-resistance surveillance'],
+    bio: 'Ibrahim oversees GeneWorldBio’s scientific standards, test validation and laboratory quality systems. He has established and audited molecular laboratories across West Africa and is responsible for ensuring that every result we support is accurate, traceable and clinically meaningful.',
+    linkedin: 'https://www.linkedin.com/company/geneworldbio',
+    order: 2,
+  },
+  {
+    slug: 'ngozi-eze',
+    title: 'Ngozi Eze',
+    role: 'Head of Partnerships & Operations',
+    credentials: 'MBA, BSc Biomedical Science',
+    location: 'Lagos, Nigeria',
+    education: 'MBA, Lagos Business School; BSc Biomedical Science, University of Lagos',
+    focus: ['Referral pathways', 'Specimen logistics', 'Account management'],
+    bio: 'Ngozi designs the operational backbone that keeps referrals, specimen logistics and provider relationships running smoothly. She works closely with hospitals, clinics and laboratories to build dependable pathways and to make sure every partner has a clear point of contact.',
+    linkedin: 'https://www.linkedin.com/company/geneworldbio',
+    order: 3,
+  },
+];
+
+const teamSeeds = teamCatalog.map((member, index) => ({
+  id: `team-${member.slug}`,
+  collection: 'team',
+  title: member.title,
+  slug: member.slug,
+  status: 'published',
+  data: {
+    title: member.title,
+    role: member.role,
+    credentials: member.credentials,
+    bio: member.bio,
+    location: member.location,
+    education: member.education,
+    focus: member.focus,
+    linkedin: member.linkedin,
+    order: member.order ?? index + 1,
+  },
+}));
+
 const seeds = [
   ...[
     ['home', 'Diagnostics, connected with care', 'A dependable partner for healthcare teams and a clearer path to diagnostic support for patients.', 'Home'],
@@ -135,6 +213,7 @@ const seeds = [
     ['quality-compliance', 'Quality begins with clear standards', 'Our approach puts accountability, careful handling, privacy and transparent communication at the centre.', 'Quality & Compliance'],
     ['about', 'Built around better access', 'GeneWorldBio is developing a Nigeria-first diagnostics and laboratory-solutions model grounded in practical partnerships.', 'About'],
     ['contact', 'Let’s find the right route', 'Tell us what you need and we will direct your message to the appropriate team.', 'Contact'],
+    ['faqs', 'Frequently Asked Questions', 'Answers to common questions about our services, access and how to get in touch.', 'GeneWorldBio'],
   ].map(([slug, title, summary, eyebrow]) => ({ id: `page-${slug}`, collection: 'pages', title, slug, status: 'published', data: slug === 'home' ? { title, summary, eyebrow, hero: { slides: heroSlides } } : { title, summary, eyebrow } })),
   ...serviceCatalog.map((service, index) => ({
     id: `service-${service.slug}`,
@@ -151,6 +230,7 @@ const seeds = [
     ['accessibility', 'Accessibility statement', 'We aim to make this website accessible and usable on mobile and desktop devices. If you encounter a barrier, contact us and describe the page and issue so we can help.'],
     ['cookies', 'Cookie information', 'The public site does not use advertising or analytics cookies. Essential session cookies are used only when an administrator signs in to the staff workspace.'],
   ].map(([slug, title, body]) => ({ id: `page-${slug}`, collection: 'pages', title, slug, status: 'published', data: { title, summary: body, eyebrow: 'Information' } })),
+  ...teamSeeds,
 ];
 
 const count = db.prepare('SELECT COUNT(*) AS n FROM content').get().n;
@@ -194,6 +274,17 @@ if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(SERVICE_SET_VERSION)
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
+const TEAM_SET_VERSION = 'team-catalog-2026-10-v1';
+if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(TEAM_SET_VERSION)) {
+  const insertTeam = db.prepare('INSERT OR IGNORE INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)');
+  db.exec('BEGIN');
+  try {
+    teamSeeds.forEach((member) => insertTeam.run(member.id, member.collection, member.title, member.slug, member.status, safeJson(member.data)));
+    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(TEAM_SET_VERSION, new Date().toISOString());
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
 const COOKIES_COPY_VERSION = 'turnstile-cookies-2026-10-v1';
 if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(COOKIES_COPY_VERSION)) {
   const cookiesRow = db.prepare("SELECT id, data FROM content WHERE collection = 'pages' AND slug = 'cookies'").get();
@@ -223,10 +314,16 @@ function respond(res, code, body, headers = {}) {
 function parseCookies(header = '') { return Object.fromEntries(header.split(';').map(x => x.trim().split('=').map(decodeURIComponent)).filter(x => x.length === 2)); }
 function sessionFor(req) {
   const token = parseCookies(req.headers.cookie).gw_session;
-  if (!token || !sessions.has(token)) return null;
-  const session = sessions.get(token);
-  if (!session || session.expires < Date.now()) { sessions.delete(token); return null; }
-  return session;
+  if (!token) return null;
+  const row = db.prepare(
+    'SELECT u.id AS user_id, u.username, u.role, u.status, s.expires FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?',
+  ).get(token);
+  if (!row) return null;
+  if (row.expires < Date.now() || row.status !== 'active') {
+    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    return null;
+  }
+  return { userId: row.user_id, username: row.username, role: row.role };
 }
 function authenticated(req) {
   return Boolean(sessionFor(req));
@@ -279,6 +376,19 @@ async function body(req) {
   for await (const chunk of req) { raw += chunk; if (raw.length > 20000) throw new Error('Request is too large.'); }
   return raw ? JSON.parse(raw) : {};
 }
+function readBinary(req, limit) {
+  return new Promise((resolveBuffer, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limit) { reject(new Error(`The image must be ${Math.round(limit / (1024 * 1024))} MB or smaller.`)); req.destroy(); return; }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolveBuffer(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
 function validRecord(collection, record, creating) {
   const title = String(record.title || '').trim();
   if (!title || title.length > 140) return 'A title of 1–140 characters is required.';
@@ -305,7 +415,9 @@ function validRecord(collection, record, creating) {
       if (!/^[+()\-.\s0-9]{6,40}$/.test(phone)) return `A valid phone number is required when ${method === 'whatsapp' ? 'WhatsApp' : 'phone'} contact is preferred.`;
     }
     if (creating && record.consent !== true) return 'Please accept the privacy notice before sending your enquiry.';
-    for (const key of ['message', 'organisation', 'orgType', 'institutionType', 'role', 'location', 'language', 'subject', 'needs', 'volume', 'volumeUnit', 'logistics', 'ethicsStatus', 'timeline', 'website', 'registrationNumber', 'contactMethod', 'phone', 'reference', 'consentVersion']) {
+    if (record.gender && !['female', 'male', 'non-binary', 'other'].includes(String(record.gender))) return 'Gender value is invalid.';
+    if (record.service && !serviceCatalog.some((service) => service.slug === record.service) && record.service !== 'other') return 'Service selection is invalid.';
+    for (const key of ['message', 'organisation', 'orgType', 'institutionType', 'role', 'location', 'language', 'subject', 'needs', 'volume', 'volumeUnit', 'logistics', 'ethicsStatus', 'timeline', 'website', 'registrationNumber', 'contactMethod', 'phone', 'reference', 'consentVersion', 'country', 'state', 'gender', 'service']) {
       if (record[key] && String(record[key]).length > (key === 'message' ? 3000 : 500)) return `${key} is too long.`;
     }
   }
@@ -339,6 +451,8 @@ const mime = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
   '.ico': 'image/x-icon',
   '.woff': 'font/woff',
   '.woff2': 'font/woff2',
@@ -357,6 +471,27 @@ function serveStatic(res, pathname) {
     res.writeHead(200, {
       'content-type': mime[ext] || 'application/octet-stream',
       'cache-control': ext === '.html' ? 'no-store' : 'public, max-age=3600',
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': 'strict-origin-when-cross-origin',
+    });
+    res.end(readFileSync(filePath));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function serveUpload(res, pathname) {
+  let decoded;
+  try { decoded = decodeURIComponent(pathname); } catch { return false; }
+  const relative = normalize(decoded.replace(/^\/uploads\/?/, '')).replace(/^([/\\])+/, '');
+  const filePath = join(uploadsDir, relative);
+  if (!relative || (filePath !== uploadsDir && !filePath.startsWith(uploadsDir + sep))) return false;
+  try {
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) return false;
+    const ext = extname(filePath).toLowerCase();
+    res.writeHead(200, {
+      'content-type': mime[ext] || 'application/octet-stream',
+      'cache-control': 'public, max-age=86400',
       'x-content-type-options': 'nosniff',
       'referrer-policy': 'strict-origin-when-cross-origin',
     });
@@ -394,14 +529,16 @@ const server = createServer(async (req, res) => {
     }
     db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(row.id);
     const token = randomBytes(32).toString('hex');
-    sessions.set(token, { userId: row.id, username: row.username, role: row.role, expires: Date.now() + 8 * 60 * 60 * 1000 });
+    db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
+    db.prepare('INSERT INTO sessions (token, user_id, username, role, expires) VALUES (?, ?, ?, ?, ?)')
+      .run(token, row.id, row.username, row.role, Date.now() + 8 * 60 * 60 * 1000);
     logAudit({ userId: row.id, username: row.username, action: 'login', ip, userAgent, metadata: { method: 'password' } });
     return respond(res, 200, { ok: true, username: row.username, role: row.role }, { 'set-cookie': `gw_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
   }
   if (req.method === 'POST' && path === '/api/admin/logout') {
     const session = sessionFor(req);
     const token = parseCookies(req.headers.cookie).gw_session;
-    sessions.delete(token);
+    if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
     if (session) logAudit({ userId: session.userId, username: session.username, action: 'logout', ip: getClientIp(req), userAgent: req.headers['user-agent'] || '' });
     return respond(res, 200, { ok: true }, { 'set-cookie': 'gw_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
@@ -461,6 +598,61 @@ const server = createServer(async (req, res) => {
       const rows = db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit)
         .map(row => ({ ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null }));
       return respond(res, 200, rows);
+    }
+
+    if (path === '/api/admin/stats/enquiries') {
+      if (req.method !== 'GET') return respond(res, 405, { error: 'Method not allowed.' });
+      const rows = db.prepare("SELECT data FROM content WHERE collection = 'inquiries'").all();
+      const records = rows.map((row) => { try { return JSON.parse(row.data); } catch { return null; } }).filter(Boolean);
+      const tally = (pick) => {
+        const counts = new Map();
+        for (const record of records) {
+          const value = String(pick(record) || '').trim();
+          if (!value) continue;
+          counts.set(value, (counts.get(value) || 0) + 1);
+        }
+        return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
+      };
+      const serviceTitles = new Map(
+        db.prepare("SELECT slug, title FROM content WHERE collection = 'services'").all().map((row) => [row.slug, row.title])
+      );
+      const byService = tally((r) => r.service).map((row) => ({ ...row, label: serviceTitles.get(row.label) || row.label }));
+      const byStatus = tally((r) => r.status);
+      const byCategory = tally((r) => r.category);
+      const byMonth = tally((r) => (r.createdAt || r.consentAt || '').slice(0, 7));
+      const summary = {
+        total: records.length,
+        newCount: records.filter((r) => r.status === 'new').length,
+        resolvedCount: records.filter((r) => r.status === 'resolved' || r.status === 'archived').length,
+        withCountry: records.filter((r) => r.country).length,
+        withState: records.filter((r) => r.state).length,
+        withGender: records.filter((r) => r.gender).length,
+        withService: records.filter((r) => r.service).length,
+      };
+      return respond(res, 200, {
+        summary,
+        byCountry: tally((r) => r.country),
+        byState: tally((r) => r.state),
+        byCategory,
+        byService,
+        byGender: tally((r) => r.gender),
+        byStatus,
+        byMonth,
+      });
+    }
+
+    if (path === '/api/admin/uploads') {
+      if (req.method !== 'POST') return respond(res, 405, { error: 'Method not allowed.' });
+      const filename = String(url.searchParams.get('filename') || '').trim();
+      const ext = extname(filename).toLowerCase();
+      if (!uploadTypes[ext]) return respond(res, 400, { error: 'Unsupported image type. Use PNG, JPG, WEBP, GIF or AVIF.' });
+      let buffer;
+      try { buffer = await readBinary(req, maxUploadBytes); } catch (error) { return respond(res, 400, { error: error.message }); }
+      if (!buffer.length) return respond(res, 400, { error: 'The uploaded image was empty.' });
+      const stored = `${Date.now()}-${randomBytes(6).toString('hex')}${ext}`;
+      writeFileSync(join(uploadsDir, stored), buffer);
+      logAudit({ userId: session.userId, username: session.username, action: 'upload', collection: 'uploads', recordId: stored, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { filename, size: buffer.length } });
+      return respond(res, 201, { url: `/uploads/${stored}`, size: buffer.length });
     }
 
     if (path === '/api/admin/users' || path.startsWith('/api/admin/users/')) {
@@ -574,6 +766,11 @@ const server = createServer(async (req, res) => {
     const xml = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls}\n</urlset>\n`;
     res.writeHead(200, { 'content-type': 'application/xml; charset=utf-8', 'cache-control': 'public, max-age=3600' });
     return res.end(xml);
+  }
+
+  if (req.method === 'GET' && path.startsWith('/uploads/')) {
+    if (serveUpload(res, path)) return;
+    return respond(res, 404, { error: 'Not found.' });
   }
 
   if (path.startsWith('/api/')) return respond(res, 404, { error: 'Not found.' });

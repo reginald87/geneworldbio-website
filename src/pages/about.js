@@ -1,5 +1,6 @@
 import { button } from '../components/layout.js';
 import { interiorHero } from '../components/sections.js';
+import { teamCards } from '../components/team.js';
 import { store } from '../lib/store.js';
 
 export const title = 'About';
@@ -28,6 +29,7 @@ export async function render() {
     <section class="section approach-section"><div class="container"><div class="quality-intro"><h2>How GeneWorldBio is organised.</h2><p>Our operating model connects clear accountabilities to the services we offer. Each area has a named responsible lead, so questions, claims and responsibilities always have an owner.</p></div><div class="quality-grid">${roles
       .map(([num, title, text]) => `<article><span>${num}</span><h3>${title}</h3><p>${text}</p></article>`)
       .join('')}</div><div class="section-end">${button('Start a conversation', '/contact', 'text')}</div></div></section>
+    <section class="section team-section"><div class="container"><div class="quality-intro"><h2>The people behind the work.</h2><p>A growing team of scientists, clinicians and operators building better diagnostic access in Nigeria. Select a profile to read more about each person.</p></div>${teamCards()}</div></section>
   </main>`;
 }
 

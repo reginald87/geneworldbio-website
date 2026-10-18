@@ -5,9 +5,9 @@ export const navItems = [
   { path: '/services', label: 'Services' },
   { path: '/healthcare-providers', label: 'Providers' },
   { path: '/patients', label: 'Patients' },
+  { path: '/faqs', label: 'FAQs' },
   { path: '/quality-compliance', label: 'Quality' },
   { path: '/about', label: 'About' },
-  { path: '/team', label: 'Team' },
   { path: '/contact', label: 'Contact' },
 ];
 

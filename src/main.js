@@ -10,8 +10,9 @@ import * as providers from './pages/providers.js';
 import * as patients from './pages/patients.js';
 import * as quality from './pages/quality.js';
 import * as about from './pages/about.js';
-import * as team from './pages/team.js';
+import * as teamMember from './pages/teamMember.js';
 import * as contact from './pages/contact.js';
+import * as faqs from './pages/faqs.js';
 import * as legal from './pages/legal.js';
 import * as admin from './pages/admin.js';
 import * as notFound from './pages/notFound.js';
@@ -25,8 +26,9 @@ const routes = [
   { path: '/patients', page: patients },
   { path: '/quality-compliance', page: quality },
   { path: '/about', page: about },
-  { path: '/team', page: team },
+  { path: '/about/team/:slug', page: teamMember },
   { path: '/contact', page: contact },
+  { path: '/faqs', page: faqs },
   { path: '/privacy-notice', page: legal },
   { path: '/terms', page: legal },
   { path: '/complaints', page: legal },
@@ -106,7 +108,7 @@ async function handle(definition, ctx) {
   setStructuredData({ title: `${definition.page.title} | GeneWorldBio`, description });
   trackPageView(location.pathname, definition.page.title);
 
-  definition.page.mount?.(app, slug);
+  definition.page.mount?.(app, slug, ctx);
   if (!definition.bare) bindMenu();
 }
 

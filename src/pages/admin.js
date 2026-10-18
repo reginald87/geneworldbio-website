@@ -7,11 +7,12 @@ import { logo } from '../components/layout.js';
 export const title = 'Staff workspace';
 
 const modules = [
+  { key: 'dashboard', label: 'Dashboard', icon: 'chart', singular: 'stat', blurb: 'Enquiry analytics: where they come from and what they ask about.', custom: true, all: true },
   { key: 'pages', label: 'Pages', icon: 'page', singular: 'page', blurb: 'Manage public pages and the home hero carousel.' },
   { key: 'services', label: 'Services', icon: 'layers', singular: 'service', blurb: 'Service pathways shown across the website.' },
   { key: 'faqs', label: 'FAQs', icon: 'sparkle', singular: 'question', blurb: 'Frequently asked questions and answers.' },
   { key: 'claims', label: 'Claims register', icon: 'check', singular: 'claim', blurb: 'Public claims with evidence and review owners.' },
-  { key: 'team', label: 'Team', icon: 'users', singular: 'team member', blurb: 'Team profiles shown on the public team page.' },
+  { key: 'team', label: 'Team', icon: 'users', singular: 'team member', blurb: 'Team profiles shown in the team section of the about page.' },
   { key: 'inquiries', label: 'Enquiries', icon: 'inbox', singular: 'enquiry', blurb: 'Messages submitted through the contact form.' },
   { key: 'staff', label: 'Staff & audit', icon: 'shield', singular: 'account', blurb: 'Staff accounts and the audit trail.', custom: true },
 ];
@@ -23,8 +24,8 @@ const fields = {
   services: ['title', 'slug', 'description', 'audience', 'access', 'preparation', 'status'],
   faqs: ['title', 'question', 'answer', 'status'],
   claims: ['title', 'claim', 'evidence', 'owner', 'reviewDate', 'status'],
-  team: ['title', 'slug', 'role', 'credentials', 'bio', 'photo', 'order', 'status'],
-  inquiries: ['title', 'reference', 'name', 'email', 'category', 'organisation', 'orgType', 'institutionType', 'role', 'location', 'language', 'subject', 'needs', 'volume', 'volumeUnit', 'logistics', 'ethicsStatus', 'timeline', 'website', 'registrationNumber', 'contactMethod', 'phone', 'consentAt', 'message', 'status'],
+  team: ['title', 'slug', 'role', 'credentials', 'bio', 'photo', 'location', 'education', 'focus', 'linkedin', 'order', 'status'],
+  inquiries: ['title', 'reference', 'name', 'email', 'category', 'organisation', 'orgType', 'institutionType', 'role', 'country', 'state', 'location', 'gender', 'service', 'language', 'subject', 'needs', 'volume', 'volumeUnit', 'logistics', 'ethicsStatus', 'timeline', 'website', 'registrationNumber', 'contactMethod', 'phone', 'consentAt', 'message', 'status'],
 };
 
 const fieldLabels = {
@@ -38,11 +39,14 @@ const fieldLabels = {
   institutionType: 'Institution type', role: 'Role', language: 'Preferred language', subject: 'Subject',
   volumeUnit: 'Volume period', ethicsStatus: 'Ethics approval', timeline: 'Expected timeline', website: 'Website',
   registrationNumber: 'Registration number', consentAt: 'Consent captured at',
-  credentials: 'Credentials', bio: 'Biography', photo: 'Photo path or URL', order: 'Display order',
+  country: 'Country', state: 'State', gender: 'Gender', service: 'Service of interest',
+  credentials: 'Credentials', bio: 'Biography', photo: 'Photo', order: 'Display order',
+  education: 'Education', focus: 'Focus areas (comma separated)', linkedin: 'LinkedIn URL',
 };
 
 const multiline = ['summary', 'description', 'access', 'answer', 'claim', 'evidence', 'message', 'needs', 'logistics', 'preparation', 'bio'];
 const required = ['title', 'email', 'message'];
+const imageFields = new Set(['photo', 'image', 'avatar', 'banner', 'logo']);
 
 const slideFields = [
   ['eyebrow', 'Eyebrow label'],
@@ -121,7 +125,7 @@ function loginPage(error = '') {
 
 function visibleModules() {
   const isAdmin = state.me?.role === 'admin';
-  return modules.filter((m) => (m.custom ? isAdmin : true));
+  return modules.filter((m) => (m.custom ? (m.all || isAdmin) : true));
 }
 
 function paintShell() {
@@ -136,12 +140,12 @@ function paintShell() {
   root.innerHTML = `<div class="admin-shell">
     <aside class="admin-sidebar">${logo()}<div class="admin-label">Workspace</div><nav>${navModules
       .map(
-        (m) => `<button class="admin-nav ${m.key === state.module ? 'active' : ''}" data-module="${m.key}">${iconSvg(m.icon)}<span>${m.label}</span><small>${(state.cache[m.key] || []).length}</small></button>`
+        (m) => `<button class="admin-nav ${m.key === state.module ? 'active' : ''}" data-module="${m.key}">${iconSvg(m.icon)}<span>${m.label}</span>${m.key === 'dashboard' ? '' : `<small>${(state.cache[m.key] || []).length}</small>`}</button>`
       )
       .join('')}</nav><button class="logout-btn">Sign out ${icons.arrow}</button><div class="admin-identity"><span class="avatar">${esc(initials)}</span><span><b>${esc(who.username || 'staff')}</b><small>${esc(roleLabel)}</small></span></div></aside>
     <main class="admin-main">
       <div class="admin-top"><div><span class="admin-breadcrumb">Workspace / ${esc(active.label)}</span><h1>${esc(active.label)}</h1><p>${esc(active.blurb)}</p></div><div class="admin-actions">${isCustom || state.module === 'inquiries' ? '' : `<button class="button primary create-record">${icons.plus} Create ${active.singular}</button>`}<button class="admin-logout">Sign out</button></div></div>
-      <div class="admin-toolbar"><label class="search-box">${icons.search}<input class="admin-search" placeholder="Search ${esc(active.label.toLowerCase())}…" value="${esc(state.search)}"></label><span class="record-count">${(state.cache[state.module] || []).length} ${(state.cache[state.module] || []).length === 1 ? 'record' : 'records'}</span></div>
+      ${state.module === 'dashboard' ? '' : `<div class="admin-toolbar"><label class="search-box">${icons.search}<input class="admin-search" placeholder="Search ${esc(active.label.toLowerCase())}…" value="${esc(state.search)}"></label><span class="record-count">${(state.cache[state.module] || []).length} ${(state.cache[state.module] || []).length === 1 ? 'record' : 'records'}</span></div>`}
       <div class="admin-records"></div>
     </main>
   </div>`;
@@ -168,6 +172,10 @@ function paintRecords() {
   const wrap = root.querySelector('.admin-records');
   if (!wrap) return;
   const module = modules.find((m) => m.key === state.module);
+  if (module.key === 'dashboard') {
+    paintDashboard(wrap);
+    return;
+  }
   if (module.custom) {
     paintStaff(wrap);
     return;
@@ -186,6 +194,69 @@ function paintRecords() {
   );
 }
 
+function statBarList(rows, total) {
+  if (!rows || !rows.length) return `<p class="stat-empty">No data yet.</p>`;
+  const max = rows[0].count || 1;
+  return `<div class="stat-bars">${rows
+    .map(
+      (row) => `<div class="stat-row"><span class="stat-label">${esc(row.label)}</span><span class="stat-track"><i style="width:${Math.max(4, Math.round((row.count / max) * 100))}%"></i></span><span class="stat-value">${row.count}${total ? ` · ${Math.round((row.count / total) * 100)}%` : ''}</span></div>`
+    )
+    .join('')}</div>`;
+}
+
+function paintDashboard(wrap) {
+  wrap.innerHTML = `<div class="dashboard-loading"><span class="spinner"></span>Loading enquiry analytics…</div>`;
+  api('/admin/stats/enquiries')
+    .then((stats) => {
+      const s = stats.summary || {};
+      const card = (label, value, hint = '') =>
+        `<div class="stat-card"><span class="stat-card-label">${esc(label)}</span><b>${value}</b>${hint ? `<small>${esc(hint)}</small>` : ''}</div>`;
+      const wrapNow = root.querySelector('.admin-records');
+      if (!wrapNow) return;
+      wrapNow.innerHTML = `
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>Enquiry overview</h3><p>Aggregated from enquiries submitted through the contact form.</p></div><button class="button secondary refresh-stats">Refresh</button></div>
+          <div class="stat-grid">
+            ${card('Total enquiries', s.total ?? 0)}
+            ${card('New / open', s.newCount ?? 0, 'Awaiting first response')}
+            ${card('Resolved or archived', s.resolvedCount ?? 0)}
+            ${card('With country captured', s.withCountry ?? 0)}
+            ${card('With state captured', s.withState ?? 0, 'Uses state field')}
+            ${card('With gender captured', s.withGender ?? 0)}
+            ${card('With service selected', s.withService ?? 0)}
+          </div>
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>Enquiries by country</h3><p>Where enquiries are coming from.</p></div></div>
+          ${statBarList(stats.byCountry, s.total)}
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>Enquiries by state</h3><p>State-level breakdown for the top locations.</p></div></div>
+          ${statBarList((stats.byState || []).slice(0, 15), s.total)}
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>Enquiries by service</h3><p>Which services people ask about most.</p></div></div>
+          ${statBarList(stats.byService, s.total)}
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>Enquiries by gender</h3><p>Reported gender of people sending enquiries.</p></div></div>
+          ${statBarList(stats.byGender, s.total)}
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>By enquiry type</h3><p>Provider, patient, research, supplier or general.</p></div></div>
+          ${statBarList(stats.byCategory, s.total)}
+        </section>
+        <section class="staff-section">
+          <div class="staff-section-head"><div><h3>By month</h3><p>Enquiry volume over time.</p></div></div>
+          ${statBarList(stats.byMonth)}
+        </section>`;
+      wrapNow.querySelector('.refresh-stats')?.addEventListener('click', () => paintDashboard(wrapNow));
+    })
+    .catch((error) => {
+      wrap.innerHTML = `<div class="empty-state"><span>✳</span><h2>Analytics unavailable</h2><p>${esc(error.message)}</p></div>`;
+    });
+}
+
 function paintStaff(wrap) {
   if (state.staffNotice) {
     wrap.innerHTML = `<div class="empty-state"><span>✳</span><h2>Staff management unavailable</h2><p>${esc(state.staffNotice)}</p></div>`;
@@ -200,13 +271,15 @@ function paintStaff(wrap) {
   wrap.innerHTML = `
     <section class="staff-section">
       <div class="staff-section-head"><div><h3>Staff accounts</h3><p>Admins can add, disable and remove accounts. Editors manage content only.</p></div><button class="button primary add-user">${icons.plus} Add account</button></div>
-      <form class="user-form" hidden>
+      <form class="user-form record-form" hidden>
+        <h4 class="user-form-title">New staff account</h4>
+        <p class="user-form-hint">Usernames are lowercased. Editors manage content; admins also manage staff and see the audit trail.</p>
         <div class="record-form-grid">
           <label>Username *<input name="username" required minlength="3" autocomplete="off" placeholder="e.g. jdoe"></label>
           <label>Role *<select name="role"><option value="editor">editor</option><option value="admin">admin</option></select></label>
-          <label>Password *<input name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="At least 12 characters"></label>
+          <label class="span-2">Password *<input name="password" type="password" required minlength="12" autocomplete="new-password" placeholder="At least 12 characters"></label>
         </div>
-        <div class="record-form-actions"><span class="user-form-error" role="alert"></span><button type="button" class="cancel-user">Cancel</button><button class="button primary">Create account</button></div>
+        <div class="record-form-actions"><span class="record-form-error user-form-error" role="alert"></span><button type="button" class="cancel-record cancel-user">Cancel</button><button class="button primary">Create account</button></div>
       </form>
       ${
         shown.length
@@ -390,6 +463,7 @@ function openEditor(record) {
       paintSlides(list);
     });
   }
+  bindImageFields(wrap);
   wrap.querySelector('form').addEventListener('submit', (event) => saveRecord(event, record, wrap));
   wrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -399,14 +473,70 @@ function closeEditor() {
   state.editing = null;
 }
 
+async function uploadImage(file) {
+  if (file.size > 5 * 1024 * 1024) throw new Error('Images must be 5 MB or smaller.');
+  const response = await fetch(`/api/admin/uploads?filename=${encodeURIComponent(file.name)}`, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'content-type': file.type || 'application/octet-stream' },
+    body: file,
+  });
+  let data = {};
+  try { data = await response.json(); } catch { /* empty response body */ }
+  if (!response.ok) throw new Error(data.error || 'The image could not be uploaded.');
+  return data.url;
+}
+
+function paintImagePreview(preview, url) {
+  preview.innerHTML = url ? `<img src="${esc(url)}" alt="">` : '<span class="image-preview-empty">No image selected</span>';
+}
+
+function bindImageFields(wrap) {
+  wrap.querySelectorAll('[data-image-field]').forEach((field) => {
+    const hidden = field.querySelector('input[type="hidden"]');
+    const input = field.querySelector('.image-input');
+    const preview = field.querySelector('.image-preview');
+    const clear = field.querySelector('.image-clear');
+    const error = field.querySelector('.image-error');
+    input.addEventListener('change', async () => {
+      const file = input.files && input.files[0];
+      input.value = '';
+      if (!file) return;
+      error.textContent = '';
+      field.classList.add('is-uploading');
+      try {
+        const url = await uploadImage(file);
+        hidden.value = url;
+        paintImagePreview(preview, url);
+        clear.hidden = false;
+      } catch (err) {
+        error.textContent = err.message;
+      } finally {
+        field.classList.remove('is-uploading');
+      }
+    });
+    clear.addEventListener('click', () => {
+      hidden.value = '';
+      paintImagePreview(preview, '');
+      clear.hidden = true;
+      error.textContent = '';
+    });
+  });
+}
+
 function fieldControl(collection, key, record) {
   const data = record?.data || {};
-  const value = collection === 'inquiries' ? data[key] : data[key] ?? record?.[key] ?? '';
+  const raw = collection === 'inquiries' ? data[key] : data[key] ?? record?.[key] ?? '';
+  const value = Array.isArray(raw) ? raw.join(', ') : raw;
   const label = fieldLabels[key] || key[0].toUpperCase() + key.slice(1);
   if (key === 'status') {
     const options = collection === 'inquiries' ? ['new', 'in-progress', 'resolved', 'archived'] : ['draft', 'published'];
     const current = record?.status || data.status || (collection === 'inquiries' ? 'new' : 'draft');
     return `<label>${label}<select name="status">${options.map((o) => `<option value="${o}" ${current === o ? 'selected' : ''}>${o.replace('-', ' ')}</option>`).join('')}</select></label>`;
+  }
+  if (imageFields.has(key)) {
+    const url = value || '';
+    return `<div class="span-2 image-field" data-image-field><span class="image-field-label">${label}</span><input type="hidden" name="${key}" value="${esc(url)}"><div class="image-field-body"><span class="image-preview">${url ? `<img src="${esc(url)}" alt="">` : '<span class="image-preview-empty">No image selected</span>'}</span><div class="image-field-actions"><label class="image-pick">Choose image<input type="file" class="image-input" accept="image/png,image/jpeg,image/webp,image/gif,image/avif"></label><button type="button" class="image-clear" ${url ? '' : 'hidden'}>Remove</button><small class="image-hint">PNG, JPG, WEBP, GIF or AVIF, up to 5 MB.</small><span class="image-error" role="alert"></span></div></div></div>`;
   }
   const isReq = required.includes(key);
   const attr = `${isReq ? 'required' : ''} ${key === 'email' ? 'type="email"' : ''}`;

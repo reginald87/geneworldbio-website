@@ -23,11 +23,13 @@ function freePort() {
 async function startServer(extraEnv = {}) {
   const port = await freePort();
   const dbPath = resolve(tmpdir(), `gw-smoke-${port}.sqlite`);
+  const uploadsPath = resolve(tmpdir(), `gw-smoke-uploads-${port}`);
   const child = spawn(node, [serverEntry], {
     env: {
       ...process.env,
       PORT: String(port),
       DB_PATH: dbPath,
+      UPLOADS_DIR: uploadsPath,
       ADMIN_PASSWORD: 'smoke-test-password-123',
       ADMIN_LOGIN_RATE_LIMIT: '1000',
       ENQUIRY_RATE_LIMIT: '100',
@@ -58,6 +60,7 @@ async function startServer(extraEnv = {}) {
       for (const suffix of ['', '-wal', '-shm']) {
         try { rmSync(`${dbPath}${suffix}`); } catch { /* already gone */ }
       }
+      try { rmSync(uploadsPath, { recursive: true, force: true }); } catch { /* already gone */ }
     },
   };
 }
@@ -323,6 +326,7 @@ test('admin accounts and audit trail', async (t) => {
 
 test('team profiles', async (t) => {
   const server = await startServer();
+  const seededTeam = 3;
   try {
     let memberId;
     await t.test('an administrator can create a team member', async () => {
@@ -345,9 +349,10 @@ test('team profiles', async (t) => {
 
     await t.test('published team members appear on the public endpoint', async () => {
       const team = await (await fetch(`${server.base}/api/public/team`)).json();
-      assert.equal(team.length, 1);
-      assert.equal(team[0].title, 'Dr Amina Bello');
-      assert.equal(team[0].data.role, 'Laboratory Lead');
+      assert.equal(team.length, seededTeam + 1);
+      const created = team.find((row) => row.id === memberId);
+      assert.equal(created.title, 'Dr Amina Bello');
+      assert.equal(created.data.role, 'Laboratory Lead');
     });
 
     await t.test('draft team members stay private', async () => {
@@ -357,9 +362,9 @@ test('team profiles', async (t) => {
         body: JSON.stringify({ title: 'Draft Person', slug: 'draft-person', status: 'draft', role: 'Trainee', order: 2 }),
       });
       const team = await (await fetch(`${server.base}/api/public/team`)).json();
-      assert.equal(team.length, 1, 'only the published member should be public');
+      assert.equal(team.length, seededTeam + 1, 'only the published members should be public');
       const all = await admin(server.base, cookie, '/api/admin/team');
-      assert.equal(all.data.length, 2);
+      assert.equal(all.data.length, seededTeam + 2);
     });
 
     await t.test('team members can be updated and deleted', async () => {
@@ -374,7 +379,52 @@ test('team profiles', async (t) => {
       const removed = await admin(server.base, cookie, `/api/admin/team/${memberId}`, { method: 'DELETE' });
       assert.equal(removed.status, 200);
       const after = await (await fetch(`${server.base}/api/public/team`)).json();
-      assert.equal(after.length, 0);
+      assert.equal(after.length, seededTeam);
+    });
+  } finally {
+    await server.stop();
+  }
+});
+
+const onePixelPng = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC',
+  'base64',
+);
+
+async function upload(base, cookie, filename, body, type) {
+  const response = await fetch(`${base}/api/admin/uploads?filename=${encodeURIComponent(filename)}`, {
+    method: 'POST',
+    headers: { 'content-type': type, ...(cookie ? { cookie } : {}) },
+    body,
+  });
+  let data = {};
+  try { data = await response.json(); } catch { /* empty body */ }
+  return { status: response.status, data };
+}
+
+test('image uploads', async (t) => {
+  const server = await startServer();
+  try {
+    await t.test('anonymous uploads are rejected', async () => {
+      const { status } = await upload(server.base, '', 'photo.png', onePixelPng, 'image/png');
+      assert.equal(status, 401);
+    });
+
+    await t.test('an administrator can upload an image and it is served back', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const { status, data } = await upload(server.base, cookie, 'photo.png', onePixelPng, 'image/png');
+      assert.equal(status, 201);
+      assert.match(data.url, /^\/uploads\/[a-z0-9-]+\.png$/i);
+      const image = await fetch(`${server.base}${data.url}`);
+      assert.equal(image.status, 200);
+      assert.equal(image.headers.get('content-type'), 'image/png');
+      assert.equal((await image.arrayBuffer()).byteLength, onePixelPng.length);
+    });
+
+    await t.test('unsupported file types are rejected', async () => {
+      const { cookie } = await login(server.base, 'admin', 'smoke-test-password-123');
+      const { status } = await upload(server.base, cookie, 'payload.svg', onePixelPng, 'image/svg+xml');
+      assert.equal(status, 400);
     });
   } finally {
     await server.stop();
