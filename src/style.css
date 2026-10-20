@@ -169,12 +169,6 @@ p {
   background: linear-gradient(90deg, rgba(255, 255, 255, 0.9) 0%, rgba(255, 255, 255, 0.25) 100%);
   display: block;
 }
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--leaf);
-  box-shadow: 0 0 0 5px rgba(87, 169, 40, 0.12);
-}
 
 .brand {
   display: inline-flex;
