@@ -4,8 +4,8 @@
 deployment:
   tasks:
     - export DEPLOYPATH=/home/$USER/geneworldbio
-    - /bin/mkdir -p "$DEPLOYPATH"
-    - /bin/rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude 'data' --exclude '.env' ./ "$DEPLOYPATH/"
-    - cd "$DEPLOYPATH" && (/opt/cpanel/ea-nodejs22/bin/npm ci || npm ci)
-    - cd "$DEPLOYPATH" && (/opt/cpanel/ea-nodejs22/bin/npm run build || npm run build)
-    - cd "$DEPLOYPATH" && (/opt/cpanel/ea-nodejs22/bin/npm prune --omit=dev || npm prune --omit=dev)
+    - mkdir -p "$DEPLOYPATH"
+    - rsync -a --delete --exclude '.git' --exclude 'node_modules' --exclude 'data' --exclude '.env' ./ "$DEPLOYPATH/" || tar --exclude='.git' --exclude='node_modules' --exclude='data' --exclude='.env' -cf - . | tar -xf - -C "$DEPLOYPATH"
+    - cd "$DEPLOYPATH" && npm ci --include=dev
+    - cd "$DEPLOYPATH" && npm run build
+    - cd "$DEPLOYPATH" && npm prune --omit=dev
