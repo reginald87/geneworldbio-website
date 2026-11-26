@@ -30,6 +30,14 @@ This app is a Node.js server (`server/index.js`) that also serves the built Vite
 
 Notes: this app needs a long-running Node process with writable disk (SQLite, uploads, in-memory sessions). It is not suitable for static-only hosting. For multi-instance/high-traffic, move sessions/DB to managed services as noted below.
 
+## Database
+
+SQLite is the default and needs no configuration beyond a writable `data/` directory. To use MySQL/MariaDB instead, create the database and a dedicated user first, grant that user full privileges on the database, then set `DB_DRIVER=mysql` plus `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD` and `MYSQL_DATABASE` in `.env` or the deployment UI. Optional settings are `MYSQL_CONNECTION_LIMIT`, `MYSQL_SSL` and `MYSQL_SSL_REJECT_UNAUTHORIZED`. The app creates its tables and seeds content on first start.
+
+Copy existing SQLite data with `npm run migrate:mysql` before switching the app to MySQL. The migration is non-destructive: it uses `INSERT IGNORE`, so existing rows in MySQL are preserved and duplicate IDs are skipped. Uploaded images stay on disk in `UPLOADS_DIR`; move them separately if your new host has different storage.
+
+Backups use `VACUUM INTO` for SQLite and `mysqldump` for MySQL, selected from `DB_DRIVER`. Install the MySQL client tools on the host before scheduling `npm run backup` with MySQL.
+
 ## Content workspace
 
 The staff workspace supports create, read, update and delete operations for pages, services, FAQs, the claims register, team profiles and enquiries. Draft content remains private until published. Enquiry records have separate categories and can be triaged through new, in-progress, resolved and archived states. Team profiles carry a role, optional credentials and a biography, and appear on the public `/team` page once published.
@@ -38,7 +46,7 @@ Staff accounts are username and password based. `admin` accounts can add, disabl
 
 ## Testing and backups
 
-Run `npm test` to execute the API smoke suite. It starts a throwaway server on a free port against a temporary database and covers service seeding, enquiry validation, consent capture, the honeypot, the timing guard, rate limiting, Turnstile enforcement, admin access control, staff account management and the audit trail, plus the team profile collection.
+Run `npm test` to execute the API smoke suite. It starts a throwaway server on a free port against a temporary SQLite database and covers service seeding, enquiry validation, consent capture, the honeypot, the timing guard, rate limiting, Turnstile enforcement, admin access control, staff account management and the audit trail, plus the team profile collection. To run the same suite against MySQL, set `TEST_DB_DRIVER=mysql` and `MYSQL_TEST_DATABASE` to a dedicated disposable database, plus the relevant `MYSQL_TEST_HOST`, `MYSQL_TEST_PORT`, `MYSQL_TEST_USER` and `MYSQL_TEST_PASSWORD` values; the suite drops its tables before each server start.
 
 Run `npm run backup` to write a consistent snapshot of `data/geneworldbio.sqlite` into `data/backups/` (override with `BACKUP_DIR`) and keep the most recent copies (`BACKUP_KEEP`, default 30). Schedule it with cron, Task Scheduler or your process manager, and store the copies off the host.
 
@@ -46,4 +54,4 @@ Run `npm run backup` to write a consistent snapshot of `data/geneworldbio.sqlite
 
 The initial public copy avoids operational claims that were not verified in the supplied blueprint. The privacy notice and terms are starter text and require review by the responsible privacy and legal owners. Before launch, configure backups, form routing and response ownership, privacy and retention rules, and accessibility, security and performance review. Set `SITE_URL` to the live domain so `robots.txt` and the XML sitemap use absolute URLs. A privacy-conscious, cookieless measurement hook is included: it honours Do Not Track and Global Privacy Control and makes no network requests unless `VITE_ANALYTICS_ENDPOINT` is set. Enquiry handling: the public form is rate limited per device, records a privacy-notice version and consent timestamp, issues a `GWB-` reference on submit and, when email is configured, sends an owner notification and an acknowledgement to the enquirer. Email can be sent two ways: via Resend (set `RESEND_API_KEY` and `ENQUIRY_NOTIFY_TO`) or via SMTP with no third-party account (set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `ENQUIRY_NOTIFY_TO`; Resend is preferred when both are present). When neither is configured, enquiries are still stored and visible in the admin workspace but no email is sent. Set `VITE_WHATSAPP_NUMBER` to add a click-to-chat link. The contact form can be protected by Cloudflare Turnstile: set the public `VITE_TURNSTILE_SITE_KEY` (build-time) and the private `TURNSTILE_SECRET_KEY` (server-side) and the server verifies each submission before storing it; when unset the check is skipped and the form still works. Public forms deliberately do not request clinical results, detailed medical histories, identity documents or genomic files. Provider, patient, research, supplier and general enquiries each use a dedicated form. Patient results, booking and provider portal capabilities are not included.
 
-The database is designed for a single-process launch environment. Sessions are held in memory, so a restart signs staff out. For a multi-instance or higher-volume deployment, move persistence to a managed database and add centralised session storage, backup monitoring and a controlled content approval workflow.
+SQLite is intended for a single-process launch environment; MySQL allows multiple instances to share content, users, sessions and audit logs. Rate-limit counters remain in memory on each process, so a multi-instance deployment still needs a shared rate-limit store, backup monitoring and a controlled content approval workflow.

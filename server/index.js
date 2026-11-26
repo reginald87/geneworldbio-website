@@ -1,8 +1,8 @@
 import { createServer } from 'node:http';
-import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
+import { createDb } from './db.js';
 import { mailerConfigured, sendEnquiryEmails } from './email.js';
 import { turnstileConfigured, verifyTurnstile } from './turnstile.js';
 
@@ -23,9 +23,7 @@ if (!secret || secret.length < 12) {
   process.exit(1);
 }
 
-const dbPath = resolve(process.env.DB_PATH || 'data/geneworldbio.sqlite');
-mkdirSync(dirname(dbPath), { recursive: true });
-const db = new DatabaseSync(dbPath);
+const db = await createDb();
 
 const uploadsDir = resolve(process.env.UPLOADS_DIR || 'data/uploads');
 mkdirSync(uploadsDir, { recursive: true });
@@ -38,56 +36,6 @@ const uploadTypes = {
   '.gif': 'image/gif',
   '.avif': 'image/avif',
 };
-db.exec(`
-  PRAGMA journal_mode = WAL;
-  PRAGMA foreign_keys = ON;
-  CREATE TABLE IF NOT EXISTS content (
-    id TEXT PRIMARY KEY,
-    collection TEXT NOT NULL,
-    title TEXT NOT NULL,
-    slug TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',
-    data TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE INDEX IF NOT EXISTS content_collection ON content(collection, created_at);
-  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'admin',
-    status TEXT NOT NULL DEFAULT 'active',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    last_login_at TEXT,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE TABLE IF NOT EXISTS audit_logs (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    username TEXT,
-    action TEXT NOT NULL,
-    collection TEXT,
-    record_id TEXT,
-    ip TEXT,
-    user_agent TEXT,
-    metadata TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE INDEX IF NOT EXISTS audit_logs_created ON audit_logs(created_at);
-  CREATE INDEX IF NOT EXISTS audit_logs_user ON audit_logs(user_id);
-  CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    username TEXT NOT NULL,
-    role TEXT NOT NULL,
-    expires INTEGER NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );
-  CREATE INDEX IF NOT EXISTS sessions_expires ON sessions(expires);
-`);
-
 const collections = new Set(['pages', 'services', 'faqs', 'claims', 'inquiries', 'team']);
 const requestCounts = new Map();
 const inquiryCounts = new Map();
@@ -233,34 +181,35 @@ const seeds = [
   ...teamSeeds,
 ];
 
-const count = db.prepare('SELECT COUNT(*) AS n FROM content').get().n;
+const count = (await db.get('SELECT COUNT(*) AS n FROM content')).n;
 if (!count) {
-  const insert = db.prepare('INSERT INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)');
-  db.exec('BEGIN');
+  await db.exec('BEGIN');
   try {
-    for (const item of seeds) insert.run(item.id, item.collection, item.title, item.slug, item.status, safeJson(item.data));
-    db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
+    for (const item of seeds) {
+      await db.run('INSERT INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)', item.id, item.collection, item.title, item.slug, item.status, safeJson(item.data));
+    }
+    await db.exec('COMMIT');
+  } catch (error) { await db.exec('ROLLBACK'); throw error; }
 }
 
-const homeRow = db.prepare("SELECT id, data FROM content WHERE collection = 'pages' AND slug = 'home'").get();
+const homeRow = await db.get("SELECT id, data FROM content WHERE collection = 'pages' AND slug = 'home'");
 if (homeRow) {
   const homeData = JSON.parse(homeRow.data);
   if (!homeData.hero || !Array.isArray(homeData.hero.slides) || !homeData.hero.slides.length) {
     homeData.hero = { slides: heroSlides };
-    db.prepare('UPDATE content SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(safeJson(homeData), homeRow.id);
+    await db.run('UPDATE content SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', safeJson(homeData), homeRow.id);
   }
 }
 
 const SERVICE_SET_VERSION = 'service-catalog-2026-10-v1';
-if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(SERVICE_SET_VERSION)) {
-  const insertService = db.prepare('INSERT OR IGNORE INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)');
+if (!(await db.get('SELECT value FROM meta WHERE `key` = ?', SERVICE_SET_VERSION))) {
   const placeholders = ['service-specialist-diagnostics', 'service-molecular-referral', 'service-specimen-logistics', 'service-laboratory-solutions'];
-  db.exec('BEGIN');
+  await db.exec('BEGIN');
   try {
-    for (const id of placeholders) db.prepare('DELETE FROM content WHERE id = ? AND collection = ?').run(id, 'services');
-    serviceCatalog.forEach((service, index) => {
-      insertService.run(
+    for (const id of placeholders) await db.run('DELETE FROM content WHERE id = ? AND collection = ?', id, 'services');
+    for (const [index, service] of serviceCatalog.entries()) {
+      await db.run(
+        'INSERT OR IGNORE INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)',
         `service-${service.slug}`,
         'services',
         service.title,
@@ -268,42 +217,41 @@ if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(SERVICE_SET_VERSION)
         'published',
         safeJson({ title: service.title, description: service.description, audience: service.audience, access: serviceAccess, preparation: service.preparation, order: index + 1 })
       );
-    });
-    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(SERVICE_SET_VERSION, new Date().toISOString());
-    db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
+    }
+    await db.run('INSERT INTO meta (`key`, value) VALUES (?, ?)', SERVICE_SET_VERSION, new Date().toISOString());
+    await db.exec('COMMIT');
+  } catch (error) { await db.exec('ROLLBACK'); throw error; }
 }
 
 const TEAM_SET_VERSION = 'team-catalog-2026-10-v1';
-if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(TEAM_SET_VERSION)) {
-  const insertTeam = db.prepare('INSERT OR IGNORE INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)');
-  db.exec('BEGIN');
+if (!(await db.get('SELECT value FROM meta WHERE `key` = ?', TEAM_SET_VERSION))) {
+  await db.exec('BEGIN');
   try {
-    teamSeeds.forEach((member) => insertTeam.run(member.id, member.collection, member.title, member.slug, member.status, safeJson(member.data)));
-    db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(TEAM_SET_VERSION, new Date().toISOString());
-    db.exec('COMMIT');
-  } catch (error) { db.exec('ROLLBACK'); throw error; }
+    for (const member of teamSeeds) {
+      await db.run('INSERT OR IGNORE INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)', member.id, member.collection, member.title, member.slug, member.status, safeJson(member.data));
+    }
+    await db.run('INSERT INTO meta (`key`, value) VALUES (?, ?)', TEAM_SET_VERSION, new Date().toISOString());
+    await db.exec('COMMIT');
+  } catch (error) { await db.exec('ROLLBACK'); throw error; }
 }
 
 const COOKIES_COPY_VERSION = 'turnstile-cookies-2026-10-v1';
-if (!db.prepare('SELECT value FROM meta WHERE key = ?').get(COOKIES_COPY_VERSION)) {
-  const cookiesRow = db.prepare("SELECT id, data FROM content WHERE collection = 'pages' AND slug = 'cookies'").get();
+if (!(await db.get('SELECT value FROM meta WHERE `key` = ?', COOKIES_COPY_VERSION))) {
+  const cookiesRow = await db.get("SELECT id, data FROM content WHERE collection = 'pages' AND slug = 'cookies'");
   if (cookiesRow) {
     const cookiesData = JSON.parse(cookiesRow.data);
     const originalCookiesCopy = 'The public site does not use advertising or analytics cookies. Essential session cookies are used only when an administrator signs in to the staff workspace.';
     if (cookiesData.summary === originalCookiesCopy) {
       cookiesData.summary = `${originalCookiesCopy} The contact form is protected by a privacy-focused bot check (Cloudflare Turnstile), which may set a short-lived cookie to prevent abuse.`;
-      db.prepare('UPDATE content SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(safeJson(cookiesData), cookiesRow.id);
+      await db.run('UPDATE content SET data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', safeJson(cookiesData), cookiesRow.id);
     }
   }
-  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)').run(COOKIES_COPY_VERSION, new Date().toISOString());
+  await db.run('INSERT INTO meta (`key`, value) VALUES (?, ?)', COOKIES_COPY_VERSION, new Date().toISOString());
 }
 
-const userCount = db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+const userCount = (await db.get('SELECT COUNT(*) AS n FROM users')).n;
 if (!userCount) {
-  db.prepare('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)').run(
-    randomUUID(), adminUsername, hashPassword(secret), 'admin', 'active',
-  );
+  await db.run('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)', randomUUID(), adminUsername, hashPassword(secret), 'admin', 'active');
   console.log(`Created initial administrator account "${adminUsername}". Add more users from the staff workspace.`);
 }
 
@@ -312,21 +260,22 @@ function respond(res, code, body, headers = {}) {
   res.end(JSON.stringify(body));
 }
 function parseCookies(header = '') { return Object.fromEntries(header.split(';').map(x => x.trim().split('=').map(decodeURIComponent)).filter(x => x.length === 2)); }
-function sessionFor(req) {
+async function sessionFor(req) {
   const token = parseCookies(req.headers.cookie).gw_session;
   if (!token) return null;
-  const row = db.prepare(
+  const row = await db.get(
     'SELECT u.id AS user_id, u.username, u.role, u.status, s.expires FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ?',
-  ).get(token);
+    token,
+  );
   if (!row) return null;
   if (row.expires < Date.now() || row.status !== 'active') {
-    db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
+    await db.run('DELETE FROM sessions WHERE token = ?', token);
     return null;
   }
   return { userId: row.user_id, username: row.username, role: row.role };
 }
-function authenticated(req) {
-  return Boolean(sessionFor(req));
+async function authenticated(req) {
+  return Boolean(await sessionFor(req));
 }
 function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -351,12 +300,11 @@ function getClientIp(req) {
   if (real) return String(real).trim();
   return req.socket?.remoteAddress || '';
 }
-function logAudit(payload) {
+async function logAudit(payload) {
   try {
-    db.prepare(`
-      INSERT INTO audit_logs (id, user_id, username, action, collection, record_id, ip, user_agent, metadata, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    `).run(
+    await db.run(
+      `INSERT INTO audit_logs (id, user_id, username, action, collection, record_id, ip, user_agent, metadata, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       randomUUID(),
       payload.userId || null,
       payload.username || null,
@@ -423,19 +371,22 @@ function validRecord(collection, record, creating) {
   }
   return null;
 }
-function list(collection, publicOnly) {
-  const q = publicOnly
-    ? db.prepare("SELECT * FROM content WHERE collection = ? AND status = 'published' ORDER BY created_at, title")
-    : db.prepare('SELECT * FROM content WHERE collection = ? ORDER BY created_at DESC');
-  const rows = q.all(collection).map(row => ({ ...row, data: JSON.parse(row.data) }));
+async function list(collection, publicOnly) {
+  const rows = await db.all(
+    publicOnly
+      ? "SELECT * FROM content WHERE collection = ? AND status = 'published' ORDER BY created_at, title"
+      : 'SELECT * FROM content WHERE collection = ? ORDER BY created_at DESC',
+    collection,
+  );
+  const parsed = rows.map(row => ({ ...row, data: JSON.parse(row.data) }));
   if (collection === 'team') {
-    rows.sort((a, b) => {
+    parsed.sort((a, b) => {
       const ao = Number(a.data.order) || 0;
       const bo = Number(b.data.order) || 0;
       return ao !== bo ? ao - bo : String(a.title).localeCompare(String(b.title));
     });
   }
-  return rows;
+  return parsed;
 }
 
 const distDir = resolve('dist');
@@ -521,34 +472,33 @@ const server = createServer(async (req, res) => {
     const username = String(payload.username || '').trim().toLowerCase();
     const password = String(payload.password || '');
     const row = username
-      ? db.prepare("SELECT * FROM users WHERE username = ? AND status = 'active'").get(username)
+      ? (await db.get(("SELECT * FROM users WHERE username = ? AND status = 'active'"),username))
       : null;
     if (!row || !verifyPassword(password, row.password_hash)) {
-      logAudit({ action: 'login_failed', username: username || null, ip, userAgent, metadata: { reason: 'invalid_credentials' } });
+      await logAudit({ action: 'login_failed', username: username || null, ip, userAgent, metadata: { reason: 'invalid_credentials' } });
       return respond(res, 401, { error: 'Those credentials were not accepted.' });
     }
-    db.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(row.id);
+    (await db.run(('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?'),row.id));
     const token = randomBytes(32).toString('hex');
-    db.prepare('DELETE FROM sessions WHERE expires < ?').run(Date.now());
-    db.prepare('INSERT INTO sessions (token, user_id, username, role, expires) VALUES (?, ?, ?, ?, ?)')
-      .run(token, row.id, row.username, row.role, Date.now() + 8 * 60 * 60 * 1000);
-    logAudit({ userId: row.id, username: row.username, action: 'login', ip, userAgent, metadata: { method: 'password' } });
+    (await db.run(('DELETE FROM sessions WHERE expires < ?'),Date.now()));
+    (await db.run(('INSERT INTO sessions (token, user_id, username, role, expires) VALUES (?, ?, ?, ?, ?)'),token, row.id, row.username, row.role, Date.now() + 8 * 60 * 60 * 1000));
+    await logAudit({ userId: row.id, username: row.username, action: 'login', ip, userAgent, metadata: { method: 'password' } });
     return respond(res, 200, { ok: true, username: row.username, role: row.role }, { 'set-cookie': `gw_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${process.env.NODE_ENV === 'production' ? '; Secure' : ''}` });
   }
   if (req.method === 'POST' && path === '/api/admin/logout') {
-    const session = sessionFor(req);
+    const session = await sessionFor(req);
     const token = parseCookies(req.headers.cookie).gw_session;
-    if (token) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-    if (session) logAudit({ userId: session.userId, username: session.username, action: 'logout', ip: getClientIp(req), userAgent: req.headers['user-agent'] || '' });
+    if (token) (await db.run(('DELETE FROM sessions WHERE token = ?'),token));
+    if (session) await logAudit({ userId: session.userId, username: session.username, action: 'logout', ip: getClientIp(req), userAgent: req.headers['user-agent'] || '' });
     return respond(res, 200, { ok: true }, { 'set-cookie': 'gw_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
   }
   if (req.method === 'GET' && path === '/api/admin/me') {
-    const session = sessionFor(req);
+    const session = await sessionFor(req);
     if (!session) return respond(res, 401, { error: 'Not signed in.' });
     return respond(res, 200, { username: session.username, role: session.role });
   }
   const publicMatch = path.match(/^\/api\/public\/(pages|services|faqs|team)$/);
-  if (req.method === 'GET' && publicMatch) return respond(res, 200, list(publicMatch[1], true));
+  if (req.method === 'GET' && publicMatch) return respond(res, 200, await list(publicMatch[1], true));
   if (req.method === 'POST' && path === '/api/public/inquiries') {
     const ip = req.socket.remoteAddress || 'local';
     const now = Date.now();
@@ -574,14 +524,14 @@ const server = createServer(async (req, res) => {
     const issue = validRecord('inquiries', record, true);
     if (issue) return respond(res, 400, { error: issue });
     const id = randomBytes(12).toString('hex');
-    db.prepare('INSERT INTO content (id, collection, title, status, data) VALUES (?, ?, ?, ?, ?)').run(id, 'inquiries', record.title, 'new', safeJson({ ...record, createdAt: new Date().toISOString() }));
+    (await db.run(('INSERT INTO content (id, collection, title, status, data) VALUES (?, ?, ?, ?, ?)'),id, 'inquiries', record.title, 'new', safeJson({ ...record, createdAt: new Date().toISOString() })));
     respond(res, 201, { ok: true, reference, message: 'Thank you. Your enquiry has been received.' });
     sendEnquiryEmails(record, reference)
-      .then((status) => {
+      .then(async (status) => {
         try {
-          const stored = JSON.parse(db.prepare('SELECT data FROM content WHERE id = ?').get(id).data);
+          const stored = JSON.parse((await db.get(('SELECT data FROM content WHERE id = ?'),id)).data);
           stored.notify = status;
-          db.prepare('UPDATE content SET data = ? WHERE id = ?').run(safeJson(stored), id);
+          (await db.run(('UPDATE content SET data = ? WHERE id = ?'),safeJson(stored), id));
         } catch { /* notification status is best-effort. */ }
       })
       .catch(() => {});
@@ -589,20 +539,20 @@ const server = createServer(async (req, res) => {
   }
 
   if (path.startsWith('/api/admin/')) {
-    const session = sessionFor(req);
+    const session = await sessionFor(req);
     if (!session) return respond(res, 401, { error: 'Please sign in to continue.' });
     if (path === '/api/admin/audit' || path === '/api/admin/audit-logs') {
       if (session.role !== 'admin') return respond(res, 403, { error: 'Administrator access is required.' });
       if (req.method !== 'GET') return respond(res, 405, { error: 'Method not allowed.' });
       const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100) || 100));
-      const rows = db.prepare('SELECT * FROM audit_logs ORDER BY created_at DESC, rowid DESC LIMIT ?').all(limit)
+      const rows = (await db.all(('SELECT * FROM audit_logs ORDER BY created_at DESC, id DESC LIMIT ?'),limit))
         .map(row => ({ ...row, metadata: row.metadata ? JSON.parse(row.metadata) : null }));
       return respond(res, 200, rows);
     }
 
     if (path === '/api/admin/stats/enquiries') {
       if (req.method !== 'GET') return respond(res, 405, { error: 'Method not allowed.' });
-      const rows = db.prepare("SELECT data FROM content WHERE collection = 'inquiries'").all();
+      const rows = (await db.all(("SELECT data FROM content WHERE collection = 'inquiries'"),));
       const records = rows.map((row) => { try { return JSON.parse(row.data); } catch { return null; } }).filter(Boolean);
       const tally = (pick) => {
         const counts = new Map();
@@ -614,7 +564,7 @@ const server = createServer(async (req, res) => {
         return [...counts.entries()].map(([label, count]) => ({ label, count })).sort((a, b) => b.count - a.count);
       };
       const serviceTitles = new Map(
-        db.prepare("SELECT slug, title FROM content WHERE collection = 'services'").all().map((row) => [row.slug, row.title])
+        (await db.all(("SELECT slug, title FROM content WHERE collection = 'services'"),)).map((row) => [row.slug, row.title])
       );
       const byService = tally((r) => r.service).map((row) => ({ ...row, label: serviceTitles.get(row.label) || row.label }));
       const byStatus = tally((r) => r.status);
@@ -651,7 +601,7 @@ const server = createServer(async (req, res) => {
       if (!buffer.length) return respond(res, 400, { error: 'The uploaded image was empty.' });
       const stored = `${Date.now()}-${randomBytes(6).toString('hex')}${ext}`;
       writeFileSync(join(uploadsDir, stored), buffer);
-      logAudit({ userId: session.userId, username: session.username, action: 'upload', collection: 'uploads', recordId: stored, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { filename, size: buffer.length } });
+      await logAudit({ userId: session.userId, username: session.username, action: 'upload', collection: 'uploads', recordId: stored, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { filename, size: buffer.length } });
       return respond(res, 201, { url: `/uploads/${stored}`, size: buffer.length });
     }
 
@@ -662,7 +612,7 @@ const server = createServer(async (req, res) => {
       const userId = userIdMatch[1] || null;
 
       if (req.method === 'GET' && !userId) {
-        const users = db.prepare('SELECT id, username, role, status, created_at, last_login_at, updated_at FROM users ORDER BY created_at').all();
+        const users = (await db.all(('SELECT id, username, role, status, created_at, last_login_at, updated_at FROM users ORDER BY created_at'),));
         return respond(res, 200, users);
       }
       if (req.method === 'POST' && !userId) {
@@ -672,14 +622,14 @@ const server = createServer(async (req, res) => {
         const role = payload.role === 'admin' ? 'admin' : 'editor';
         if (!/^[a-z0-9._-]{3,32}$/.test(username)) return respond(res, 400, { error: 'Usernames must be 3–32 characters: letters, numbers, dot, dash or underscore.' });
         if (password.length < 12) return respond(res, 400, { error: 'Passwords must be at least 12 characters.' });
-        if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) return respond(res, 409, { error: 'That username is already in use.' });
+        if ((await db.get(('SELECT id FROM users WHERE username = ?'),username))) return respond(res, 409, { error: 'That username is already in use.' });
         const newId = randomUUID();
-        db.prepare('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)').run(newId, username, hashPassword(password), role, 'active');
-        logAudit({ userId: session.userId, username: session.username, action: 'create', collection: 'users', recordId: newId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username, role } });
+        (await db.run(('INSERT INTO users (id, username, password_hash, role, status) VALUES (?, ?, ?, ?, ?)'),newId, username, hashPassword(password), role, 'active'));
+        await logAudit({ userId: session.userId, username: session.username, action: 'create', collection: 'users', recordId: newId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username, role } });
         return respond(res, 201, { id: newId });
       }
       if (userId && req.method === 'PUT') {
-        const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+        const target = (await db.get(('SELECT * FROM users WHERE id = ?'),userId));
         if (!target) return respond(res, 404, { error: 'User not found.' });
         let payload; try { payload = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
         const updates = [];
@@ -700,18 +650,18 @@ const server = createServer(async (req, res) => {
         }
         if (!updates.length) return respond(res, 400, { error: 'Nothing to update.' });
         updates.push('updated_at = CURRENT_TIMESTAMP');
-        db.prepare(`UPDATE users SET ${updates.join(', ')} WHERE id = ?`).run(...values, userId);
-        logAudit({ userId: session.userId, username: session.username, action: 'update', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { fields: Object.keys(payload) } });
+        (await db.run((`UPDATE users SET ${updates.join(', ')} WHERE id = ?`),...values, userId));
+        await logAudit({ userId: session.userId, username: session.username, action: 'update', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { fields: Object.keys(payload) } });
         return respond(res, 200, { ok: true });
       }
       if (userId && req.method === 'DELETE') {
         if (userId === session.userId) return respond(res, 400, { error: 'You cannot delete your own account.' });
-        const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+        const target = (await db.get(('SELECT * FROM users WHERE id = ?'),userId));
         if (!target) return respond(res, 404, { error: 'User not found.' });
-        const admins = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'").get().n;
+        const admins = (await db.get(("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND status = 'active'"),)).n;
         if (target.role === 'admin' && admins <= 1) return respond(res, 400, { error: 'At least one active administrator is required.' });
-        db.prepare('DELETE FROM users WHERE id = ?').run(userId);
-        logAudit({ userId: session.userId, username: session.username, action: 'delete', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username: target.username } });
+        (await db.run(('DELETE FROM users WHERE id = ?'),userId));
+        await logAudit({ userId: session.userId, username: session.username, action: 'delete', collection: 'users', recordId: userId, ip: getClientIp(req), userAgent: req.headers['user-agent'] || '', metadata: { username: target.username } });
         return respond(res, 200, { ok: true });
       }
       return respond(res, 405, { error: 'Method not allowed.' });
@@ -723,19 +673,19 @@ const server = createServer(async (req, res) => {
     const ua = req.headers['user-agent'] || '';
     const ipAddr = getClientIp(req);
     const auditContext = { userId: session.userId, username: session.username, collection, ip: ipAddr, userAgent: ua };
-    if (req.method === 'GET' && !id) return respond(res, 200, list(collection, false));
+    if (req.method === 'GET' && !id) return respond(res, 200, await list(collection, false));
     if (req.method === 'POST' && !id) {
       let record; try { record = await body(req); } catch { return respond(res, 400, { error: 'Invalid request.' }); }
       const issue = validRecord(collection, record, true); if (issue) return respond(res, 400, { error: issue });
       const newId = randomBytes(6).toString('hex');
       const slugSource = record.slug || (collection === 'team' ? record.title : '');
       const slug = String(slugSource || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
-      db.prepare('INSERT INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)').run(newId, collection, record.title.trim(), slug, record.status || (collection === 'inquiries' ? 'new' : 'draft'), safeJson(record));
-      logAudit({ ...auditContext, action: 'create', recordId: newId, metadata: { title: record.title.trim(), status: record.status || (collection === 'inquiries' ? 'new' : 'draft') } });
+      (await db.run(('INSERT INTO content (id, collection, title, slug, status, data) VALUES (?, ?, ?, ?, ?, ?)'),newId, collection, record.title.trim(), slug, record.status || (collection === 'inquiries' ? 'new' : 'draft'), safeJson(record)));
+      await logAudit({ ...auditContext, action: 'create', recordId: newId, metadata: { title: record.title.trim(), status: record.status || (collection === 'inquiries' ? 'new' : 'draft') } });
       return respond(res, 201, { id: newId });
     }
     if (id && req.method === 'GET') {
-      const row = db.prepare('SELECT * FROM content WHERE id = ? AND collection = ?').get(id, collection);
+      const row = (await db.get(('SELECT * FROM content WHERE id = ? AND collection = ?'),id, collection));
       return row ? respond(res, 200, { ...row, data: JSON.parse(row.data) }) : respond(res, 404, { error: 'Record not found.' });
     }
     if (id && req.method === 'PUT') {
@@ -743,13 +693,13 @@ const server = createServer(async (req, res) => {
       const issue = validRecord(collection, record, false); if (issue) return respond(res, 400, { error: issue });
       const slugSource = record.slug || (collection === 'team' ? record.title : '');
       const slug = String(slugSource || '').trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-|-$/g, '') || null;
-      const result = db.prepare('UPDATE content SET title = ?, slug = ?, status = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND collection = ?').run(record.title.trim(), slug, record.status || 'draft', safeJson(record), id, collection);
-      if (result.changes) logAudit({ ...auditContext, action: 'update', recordId: id, metadata: { title: record.title.trim(), status: record.status || 'draft' } });
+      const result = (await db.run(('UPDATE content SET title = ?, slug = ?, status = ?, data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND collection = ?'),record.title.trim(), slug, record.status || 'draft', safeJson(record), id, collection));
+      if (result.changes) await logAudit({ ...auditContext, action: 'update', recordId: id, metadata: { title: record.title.trim(), status: record.status || 'draft' } });
       return result.changes ? respond(res, 200, { ok: true }) : respond(res, 404, { error: 'Record not found.' });
     }
     if (id && req.method === 'DELETE') {
-      const result = db.prepare('DELETE FROM content WHERE id = ? AND collection = ?').run(id, collection);
-      if (result.changes) logAudit({ ...auditContext, action: 'delete', recordId: id });
+      const result = (await db.run(('DELETE FROM content WHERE id = ? AND collection = ?'),id, collection));
+      if (result.changes) await logAudit({ ...auditContext, action: 'delete', recordId: id });
       return result.changes ? respond(res, 200, { ok: true }) : respond(res, 404, { error: 'Record not found.' });
     }
     return respond(res, 405, { error: 'Method not allowed.' });

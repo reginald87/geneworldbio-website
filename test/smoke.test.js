@@ -8,6 +8,27 @@ import { tmpdir } from 'node:os';
 
 const node = process.execPath;
 const serverEntry = resolve('server/index.js');
+const mysqlTest = String(process.env.TEST_DB_DRIVER || '').toLowerCase() === 'mysql';
+
+if (mysqlTest && !process.env.MYSQL_TEST_DATABASE) {
+  throw new Error('Set MYSQL_TEST_DATABASE to a dedicated disposable MySQL database before running MySQL tests.');
+}
+
+async function resetMysql() {
+  const { default: mysql } = await import('mysql2/promise');
+  const connection = await mysql.createConnection({
+    host: process.env.MYSQL_TEST_HOST || process.env.MYSQL_HOST || 'localhost',
+    port: Number(process.env.MYSQL_TEST_PORT || process.env.MYSQL_PORT || 3306),
+    user: process.env.MYSQL_TEST_USER || process.env.MYSQL_USER || 'root',
+    password: process.env.MYSQL_TEST_PASSWORD || process.env.MYSQL_PASSWORD || '',
+    database: process.env.MYSQL_TEST_DATABASE,
+  });
+  try {
+    await connection.query('DROP TABLE IF EXISTS content, meta, users, audit_logs, sessions');
+  } finally {
+    await connection.end();
+  }
+}
 
 function freePort() {
   return new Promise((resolvePort, reject) => {
@@ -24,11 +45,22 @@ async function startServer(extraEnv = {}) {
   const port = await freePort();
   const dbPath = resolve(tmpdir(), `gw-smoke-${port}.sqlite`);
   const uploadsPath = resolve(tmpdir(), `gw-smoke-uploads-${port}`);
+  const databaseEnv = mysqlTest
+    ? {
+      DB_DRIVER: 'mysql',
+      MYSQL_HOST: process.env.MYSQL_TEST_HOST || process.env.MYSQL_HOST || 'localhost',
+      MYSQL_PORT: String(process.env.MYSQL_TEST_PORT || process.env.MYSQL_PORT || 3306),
+      MYSQL_USER: process.env.MYSQL_TEST_USER || process.env.MYSQL_USER || 'root',
+      MYSQL_PASSWORD: process.env.MYSQL_TEST_PASSWORD || process.env.MYSQL_PASSWORD || '',
+      MYSQL_DATABASE: process.env.MYSQL_TEST_DATABASE,
+    }
+    : { DB_DRIVER: 'sqlite', DB_PATH: dbPath };
+  if (mysqlTest) await resetMysql();
   const child = spawn(node, [serverEntry], {
     env: {
       ...process.env,
       PORT: String(port),
-      DB_PATH: dbPath,
+      ...databaseEnv,
       UPLOADS_DIR: uploadsPath,
       ADMIN_PASSWORD: 'smoke-test-password-123',
       ADMIN_LOGIN_RATE_LIMIT: '1000',
@@ -57,8 +89,10 @@ async function startServer(extraEnv = {}) {
     async stop() {
       child.kill();
       await new Promise((done) => setTimeout(done, 250));
-      for (const suffix of ['', '-wal', '-shm']) {
-        try { rmSync(`${dbPath}${suffix}`); } catch { /* already gone */ }
+      if (!mysqlTest) {
+        for (const suffix of ['', '-wal', '-shm']) {
+          try { rmSync(`${dbPath}${suffix}`); } catch { /* already gone */ }
+        }
       }
       try { rmSync(uploadsPath, { recursive: true, force: true }); } catch { /* already gone */ }
     },
